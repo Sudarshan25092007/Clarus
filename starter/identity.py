@@ -1,11 +1,13 @@
-"""Phase 1 & 2 patient identity extraction, multilingual normalization, and resolver skeleton (stdlib only)."""
+"""Phase 1-3 patient identity extraction, multilingual normalization, blocking, scoring, and clustering (stdlib only)."""
 from __future__ import annotations
 
 import base64
 import binascii
 import datetime as dt
+import difflib
 import re
 import unicodedata
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -228,10 +230,12 @@ class RecordIdentity:
 
 
 class IdentityResolver:
-    """Skeleton patient identity resolver (Phase 1 stores extracted records only)."""
+    """Patient identity resolver using blocking, conflict vetoes, and conflict-safe clustering."""
 
     def __init__(self) -> None:
         self.records: list[RecordIdentity] = []
+        self.normalized: list[NormalizedIdentity] = []
+        self.clusters: list[list[int]] = []
         self._by_locator: dict[tuple[str, str], RecordIdentity] = {}
         self._patient_ids: dict[tuple[str, str], str] = {}
         self._patient_keys: dict[tuple[str, str], str] = {}
@@ -245,11 +249,68 @@ class IdentityResolver:
         self._by_locator[(relpath, loc)] = rec
 
     def resolve_all(self) -> None:
-        """Run blocking, scoring, conflict-safe clustering, and compute PSN IDs.
+        """Run normalization, blocking, scoring, and conflict-safe Union-Find clustering."""
+        self.normalized = [normalize_identity(r) for r in self.records]
+        self._patient_ids.clear()
+        self._patient_keys.clear()
+        self.clusters = []
 
-        Stub for Phase 3.
-        """
-        return None
+        n = len(self.normalized)
+        if n == 0:
+            return
+
+        candidate_pairs = generate_candidate_pairs(self.normalized)
+        scored_edges: list[tuple[float, int, int]] = []
+        for i, j in candidate_pairs:
+            sc = score_pair(self.normalized[i], self.normalized[j])
+            if sc >= LINK_THRESHOLD:
+                scored_edges.append((sc, i, j))
+
+        scored_edges.sort(key=lambda item: (-item[0], item[1], item[2]))
+
+        parent = list(range(n))
+        members: dict[int, list[int]] = {i: [i] for i in range(n)}
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        conflict_cache: dict[tuple[int, int], bool] = {}
+
+        def pair_conflicts(x: int, y: int) -> bool:
+            key = (x, y) if x < y else (y, x)
+            cached = conflict_cache.get(key)
+            if cached is None:
+                cached = has_hard_conflict(self.normalized[x], self.normalized[y])
+                conflict_cache[key] = cached
+            return cached
+
+        for _, i, j in scored_edges:
+            ri, rj = find(i), find(j)
+            if ri == rj:
+                continue
+            # Conflict-safe cluster guard: reject merge if any cross-pair has a hard conflict.
+            if any(pair_conflicts(x, y) for x in members[ri] for y in members[rj]):
+                continue
+            if len(members[ri]) < len(members[rj]):
+                ri, rj = rj, ri
+            parent[rj] = ri
+            members[ri].extend(members[rj])
+            del members[rj]
+
+        linked_clusters = [sorted(idxs) for idxs in members.values() if len(idxs) >= 2]
+        linked_clusters.sort(
+            key=lambda idxs: min((self.records[idx].relpath, self.records[idx].loc) for idx in idxs)
+        )
+        self.clusters = linked_clusters
+
+        for cid, idxs in enumerate(linked_clusters):
+            label = f"cluster_{cid}"
+            for idx in idxs:
+                rec = self.records[idx]
+                self._patient_ids[(rec.relpath, rec.loc)] = label
 
     def get_patient_id(self, relpath: str, loc: str) -> str | None:
         """Return 'PSN-XXXXXX' or None if unlinked."""
@@ -924,6 +985,7 @@ _TRAILING_HONORIFICS = frozenset(
         "saab",
         "babu",
         "amma",
+        "papa",
         "bhaiya",
         "bhaiyya",
         "bhai",
@@ -933,7 +995,12 @@ _TRAILING_HONORIFICS = frozenset(
         "bahanji",
         "chacha",
         "chachu",
+        "tau",
+        "kaka",
         "mama",
+        "mausi",
+        "bua",
+        "bhabhi",
         "dada",
         "dadi",
         "nana",
@@ -1342,3 +1409,268 @@ def normalize_identity(rec: RecordIdentity) -> NormalizedIdentity:
         norm_village=normalize_village(rec.village),
         norm_pin=normalize_pin(rec.pin),
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Candidate Blocking, Conflict Vetoes, Scoring, and Clustering
+# ---------------------------------------------------------------------------
+
+LINK_THRESHOLD = 50.0
+MEDIUM_THRESHOLD = 30.0
+_MAX_PHONE_BUCKET_SIZE = 25
+_MAX_NAME_BUCKET_SIZE = 150
+
+_NATIONAL_ID_TYPES = ("abha", "aadhaar", "pan")
+_STRONG_ANCHOR_TYPES = ("abha", "aadhaar", "pan", "insurance")
+_STRICT_REL_TYPES = frozenset({"S/o", "D/o", "W/o", "C/o", "Father", "Mother"})
+
+
+def _mrn_series(mrn: str) -> str:
+    """Extract hospital MRN series prefix (e.g. 'SNJ/26/', 'IPD-2026-', 'JJH-')."""
+    return re.sub(r"\d+$", "", mrn)
+
+
+def _ids_by_type(norm: NormalizedIdentity) -> dict[str, set[str]]:
+    grouped: dict[str, set[str]] = defaultdict(set)
+    for id_type, val in norm.strong_ids:
+        grouped[id_type].add(val)
+    return grouped
+
+
+def _relative_names_compatible(name_a: str, name_b: str) -> bool:
+    """Return True if two normalized relative names refer to the same person."""
+    sa = phonetic_skeleton(name_a)
+    sb = phonetic_skeleton(name_b)
+    if not sa or not sb:
+        return False
+    if sa == sb:
+        return True
+    ta = set(sa.split())
+    tb = set(sb.split())
+    if (len(ta) == 1 or len(tb) == 1) and bool(ta & tb):
+        return True
+    return difflib.SequenceMatcher(None, sa, sb).ratio() >= 0.75
+
+
+def _has_compatible_relative_pair(
+    rels_a: list[tuple[str, str]], rels_b: list[tuple[str, str]]
+) -> bool:
+    """Check if two records share at least one compatible relative name."""
+    for _, name_a in rels_a:
+        for _, name_b in rels_b:
+            if _relative_names_compatible(name_a, name_b):
+                return True
+    return False
+
+
+def generate_candidate_pairs(norms: list[NormalizedIdentity]) -> list[tuple[int, int]]:
+    """Build inverted-index blocking buckets and return unique sorted index pairs."""
+    phone_counts: Counter[str] = Counter()
+    for norm in norms:
+        for ph in set(norm.norm_phones):
+            phone_counts[ph] += 1
+
+    buckets: dict[tuple[str, ...], list[int]] = defaultdict(list)
+
+    for idx, norm in enumerate(norms):
+        # 1. Strong ID buckets (ABHA, Aadhaar, PAN, Insurance, hospital-scoped MRN)
+        for id_type, val in norm.strong_ids:
+            buckets[("id", id_type, val)].append(idx)
+
+        # 2. Phone bucket (skip shared hospital helplines appearing >25 times)
+        for ph in norm.norm_phones:
+            if phone_counts[ph] <= _MAX_PHONE_BUCKET_SIZE:
+                buckets[("phone", ph)].append(idx)
+
+        # 3. Name-skeleton buckets: (first_skel, last_skel) + partial (token_skel, pin/rel)
+        rel_token_skels = {
+            _token_phonetic_skeleton(rtok)
+            for _, rname in norm.norm_relatives
+            for rtok in rname.split()
+        }
+        rel_token_skels.discard("")
+
+        for tokens in norm.name_tokens:
+            if len(tokens) >= 2:
+                first_s = _token_phonetic_skeleton(tokens[0])
+                last_s = _token_phonetic_skeleton(tokens[-1])
+                if first_s and last_s:
+                    buckets[("fl", first_s, last_s)].append(idx)
+
+            for tok in tokens:
+                ts = _token_phonetic_skeleton(tok)
+                if not ts:
+                    continue
+                if norm.norm_pin:
+                    buckets[("tok_pin", ts, norm.norm_pin)].append(idx)
+                for rts in rel_token_skels:
+                    buckets[("tok_rel", ts, rts)].append(idx)
+
+    pairs: set[tuple[int, int]] = set()
+    for bkey, idxs in buckets.items():
+        if len(idxs) < 2:
+            continue
+        if bkey[0] in ("fl", "tok_pin", "tok_rel") and len(idxs) > _MAX_NAME_BUCKET_SIZE:
+            continue
+        for pos, i in enumerate(idxs):
+            for j in idxs[pos + 1 :]:
+                if i < j:
+                    pairs.add((i, j))
+                elif j < i:
+                    pairs.add((j, i))
+
+    return sorted(pairs)
+
+
+def has_hard_conflict(a: NormalizedIdentity, b: NormalizedIdentity) -> bool:
+    """Return True if two records contain mutually incompatible identity evidence."""
+    ids_a = _ids_by_type(a)
+    ids_b = _ids_by_type(b)
+
+    # 1. National ID mismatch (ABHA, Aadhaar, PAN)
+    has_national_match = False
+    for id_type in _NATIONAL_ID_TYPES:
+        va, vb = ids_a.get(id_type), ids_b.get(id_type)
+        if va and vb:
+            if not (va & vb):
+                return True
+            has_national_match = True
+
+    # 2. Gender mismatch
+    if a.gender in ("M", "F") and b.gender in ("M", "F") and a.gender != b.gender:
+        return True
+
+    # 3. Exact DOB mismatch
+    if a.dob_iso and b.dob_iso and a.dob_iso != b.dob_iso:
+        return True
+
+    # 4. Age difference > 3 years (unless exact DOB already matches)
+    if a.age_approx is not None and b.age_approx is not None:
+        if not (a.dob_iso and b.dob_iso and a.dob_iso == b.dob_iso):
+            if abs(a.age_approx - b.age_approx) > 3:
+                return True
+
+    # 5. Relative name conflict for the same relation type
+    rels_a: dict[str, list[str]] = defaultdict(list)
+    rels_b: dict[str, list[str]] = defaultdict(list)
+    for rel, rname in a.norm_relatives:
+        if rel in _STRICT_REL_TYPES:
+            rels_a[rel].append(rname)
+    for rel, rname in b.norm_relatives:
+        if rel in _STRICT_REL_TYPES:
+            rels_b[rel].append(rname)
+    for rel, names_a in rels_a.items():
+        names_b = rels_b.get(rel)
+        if names_b and not any(
+            _relative_names_compatible(na, nb) for na in names_a for nb in names_b
+        ):
+            return True
+
+    # 6. Same-hospital, same-series MRN mismatch (allow OPD vs IPD series, and allow
+    # explicitly corroborated "old card merged" duplicates).
+    if a.hospital_hint and b.hospital_hint and a.hospital_hint == b.hospital_hint:
+        mrns_a = ids_a.get("mrn", set())
+        mrns_b = ids_b.get("mrn", set())
+        if mrns_a and mrns_b:
+            series_a: dict[str, set[str]] = defaultdict(set)
+            series_b: dict[str, set[str]] = defaultdict(set)
+            for m in mrns_a:
+                series_a[_mrn_series(m)].add(m)
+            for m in mrns_b:
+                series_b[_mrn_series(m)].add(m)
+
+            common_series = set(series_a) & set(series_b)
+            for series in common_series:
+                if not (series_a[series] & series_b[series]):
+                    same_triple = (
+                        bool(a.dob_iso and b.dob_iso and a.dob_iso == b.dob_iso)
+                        and bool(set(a.norm_phones) & set(b.norm_phones))
+                        and _has_compatible_relative_pair(a.norm_relatives, b.norm_relatives)
+                    )
+                    if not (has_national_match or same_triple):
+                        return True
+
+    return False
+
+
+def _name_match_score(a: NormalizedIdentity, b: NormalizedIdentity) -> float:
+    """Compute name similarity points (+25 full match, +12 partial/single-token, else 0)."""
+    if not a.norm_names or not b.norm_names:
+        return 0.0
+
+    full_skels_a = {s for s in a.name_skeletons if " " in s}
+    full_skels_b = {s for s in b.name_skeletons if " " in s}
+    if full_skels_a & full_skels_b:
+        return 25.0
+
+    # Check multi-token similarity >= 0.85 across normalized names / skeleton token sets
+    multi_a = [t for t in a.name_tokens if len(t) >= 2]
+    multi_b = [t for t in b.name_tokens if len(t) >= 2]
+    for ta in multi_a:
+        sa_toks = {_token_phonetic_skeleton(t) for t in ta}
+        sa_str = " ".join(_token_phonetic_skeleton(t) for t in ta)
+        for tb in multi_b:
+            sb_toks = {_token_phonetic_skeleton(t) for t in tb}
+            sb_str = " ".join(_token_phonetic_skeleton(t) for t in tb)
+            if sa_toks == sb_toks:
+                return 25.0
+            if difflib.SequenceMatcher(None, sa_str, sb_str).ratio() >= 0.85:
+                return 25.0
+
+    # Partial / single-token name match (cannot cross LINK_THRESHOLD alone)
+    tok_skels_a = {_token_phonetic_skeleton(t) for toks in a.name_tokens for t in toks}
+    tok_skels_b = {_token_phonetic_skeleton(t) for toks in b.name_tokens for t in toks}
+    tok_skels_a.discard("")
+    tok_skels_b.discard("")
+    if tok_skels_a & tok_skels_b:
+        return 12.0
+
+    return 0.0
+
+
+def score_pair(a: NormalizedIdentity, b: NormalizedIdentity) -> float:
+    """Score identity compatibility between two normalized records (-inf on hard conflict)."""
+    if has_hard_conflict(a, b):
+        return float("-inf")
+
+    score = 0.0
+    ids_a = _ids_by_type(a)
+    ids_b = _ids_by_type(b)
+
+    # +50: exact ABHA, Aadhaar, PAN, or Insurance ID match
+    if any(ids_a.get(t, set()) & ids_b.get(t, set()) for t in _STRONG_ANCHOR_TYPES):
+        score += 50.0
+
+    # +45: exact hospital-scoped MRN match
+    if ids_a.get("mrn", set()) & ids_b.get("mrn", set()):
+        score += 45.0
+
+    # +30: exact 10-digit phone match
+    if set(a.norm_phones) & set(b.norm_phones):
+        score += 30.0
+
+    # +25 full name skeleton / >=0.85 token match, or +12 partial/single-token
+    score += _name_match_score(a, b)
+
+    # +15: compatible relative / guardian skeleton match
+    if _has_compatible_relative_pair(a.norm_relatives, b.norm_relatives):
+        score += 15.0
+
+    # +10 exact DOB match, or +5 age within <= 2 years
+    if a.dob_iso and b.dob_iso and a.dob_iso == b.dob_iso:
+        score += 10.0
+    elif a.age_approx is not None and b.age_approx is not None:
+        if abs(a.age_approx - b.age_approx) <= 2:
+            score += 5.0
+
+    # +8: same PIN or normalized village phonetic skeleton
+    same_pin = bool(a.norm_pin and b.norm_pin and a.norm_pin == b.norm_pin)
+    same_village = bool(
+        a.norm_village
+        and b.norm_village
+        and phonetic_skeleton(a.norm_village) == phonetic_skeleton(b.norm_village)
+    )
+    if same_pin or same_village:
+        score += 8.0
+
+    return score
