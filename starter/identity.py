@@ -1,4 +1,4 @@
-"""Phase 1-3 patient identity extraction, multilingual normalization, blocking, scoring, and clustering (stdlib only)."""
+"""Phase 1-4 patient identity extraction, normalization, blocking, clustering, and HMAC keys (stdlib only)."""
 from __future__ import annotations
 
 import base64
@@ -8,6 +8,7 @@ import difflib
 import re
 import unicodedata
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -232,7 +233,8 @@ class RecordIdentity:
 class IdentityResolver:
     """Patient identity resolver using blocking, conflict vetoes, and conflict-safe clustering."""
 
-    def __init__(self) -> None:
+    def __init__(self, pseudonym_fn: Callable[[str], str] | None = None) -> None:
+        self._pseudonym_fn = pseudonym_fn
         self.records: list[RecordIdentity] = []
         self.normalized: list[NormalizedIdentity] = []
         self.clusters: list[list[int]] = []
@@ -248,8 +250,9 @@ class IdentityResolver:
         self.records.append(rec)
         self._by_locator[(relpath, loc)] = rec
 
-    def resolve_all(self) -> None:
-        """Run normalization, blocking, scoring, and conflict-safe Union-Find clustering."""
+    def resolve_all(self, pseudonym_fn: Callable[[str], str] | None = None) -> None:
+        """Run normalization, blocking, scoring, conflict-safe clustering, and compute PSN IDs."""
+        fn = pseudonym_fn if pseudonym_fn is not None else self._pseudonym_fn
         self.normalized = [normalize_identity(r) for r in self.records]
         self._patient_ids.clear()
         self._patient_keys.clear()
@@ -300,17 +303,52 @@ class IdentityResolver:
             members[ri].extend(members[rj])
             del members[rj]
 
-        linked_clusters = [sorted(idxs) for idxs in members.values() if len(idxs) >= 2]
+        all_components = [sorted(idxs) for idxs in members.values()]
+        linked_clusters = [idxs for idxs in all_components if len(idxs) >= 2]
         linked_clusters.sort(
             key=lambda idxs: min((self.records[idx].relpath, self.records[idx].loc) for idx in idxs)
         )
         self.clusters = linked_clusters
 
-        for cid, idxs in enumerate(linked_clusters):
-            label = f"cluster_{cid}"
+        if fn is None:
+            for cid, idxs in enumerate(linked_clusters):
+                label = f"cluster_{cid}"
+                for idx in idxs:
+                    rec = self.records[idx]
+                    self._patient_ids[(rec.relpath, rec.loc)] = label
+            return
+
+        # Phase 4 mode: assign deterministic patient_key and HMAC PSN-XXXXXX to all patient
+        # clusters (multi-record clusters plus patient singletons with name or strong ID).
+        patient_clusters = [
+            idxs
+            for idxs in all_components
+            if len(idxs) >= 2
+            or bool(self.normalized[idxs[0]].norm_names or self.normalized[idxs[0]].strong_ids)
+        ]
+        patient_clusters.sort(
+            key=lambda idxs: min((self.records[idx].relpath, self.records[idx].loc) for idx in idxs)
+        )
+
+        raw_keys = [
+            _build_cluster_key([self.normalized[idx] for idx in idxs]) for idxs in patient_clusters
+        ]
+        key_counts = Counter(raw_keys)
+
+        for idxs, base_key in zip(patient_clusters, raw_keys):
+            patient_key = base_key
+            if key_counts[base_key] > 1:
+                # Guarantee distinct clusters (e.g. shared family phone veto) never share a PSN.
+                min_rel, min_loc = min(
+                    (self.records[idx].relpath, self.records[idx].loc) for idx in idxs
+                )
+                patient_key = f"{base_key}|at:{min_rel}|{min_loc}"
+            pid = fn(patient_key)
             for idx in idxs:
                 rec = self.records[idx]
-                self._patient_ids[(rec.relpath, rec.loc)] = label
+                loc_key = (rec.relpath, rec.loc)
+                self._patient_ids[loc_key] = pid
+                self._patient_keys[loc_key] = patient_key
 
     def get_patient_id(self, relpath: str, loc: str) -> str | None:
         """Return 'PSN-XXXXXX' or None if unlinked."""
@@ -1674,3 +1712,35 @@ def score_pair(a: NormalizedIdentity, b: NormalizedIdentity) -> float:
         score += 8.0
 
     return score
+
+
+_KEY_PRIORITY_ORDER = ("abha", "aadhaar", "pan", "insurance", "mrn")
+
+
+def _build_cluster_key(cluster_norms: list[NormalizedIdentity]) -> str:
+    """Build deterministic, secret-independent canonical patient_key for a cluster."""
+    by_type: dict[str, list[str]] = defaultdict(list)
+    phones: list[str] = []
+    demogs: list[tuple[str, str, str]] = []
+
+    for norm in cluster_norms:
+        for id_type, val in norm.strong_ids:
+            by_type[id_type].append(val)
+        phones.extend(norm.norm_phones)
+        if norm.norm_names and norm.dob_iso and norm.gender:
+            demogs.append((min(norm.norm_names), norm.dob_iso, norm.gender))
+
+    for id_type in _KEY_PRIORITY_ORDER:
+        vals = by_type.get(id_type)
+        if vals:
+            return f"{id_type}:{min(vals)}"
+
+    if phones:
+        return f"phone:{min(phones)}"
+
+    if demogs:
+        name, dob, gender = min(demogs)
+        return f"demog:{name}|{dob}|{gender}"
+
+    min_rel, min_loc = min((n.relpath, n.loc) for n in cluster_norms)
+    return f"rec:{min_rel}|{min_loc}"

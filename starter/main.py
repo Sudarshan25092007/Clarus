@@ -33,7 +33,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from identity_pipeline import build_pseudonym_map
+from identity import IdentityResolver
 
 # --------------------------------------------------------------------------- policy
 def load_policy(path: Path) -> dict[str, int | str]:
@@ -159,7 +159,52 @@ def decode(raw: bytes) -> str | None:
     return None
 
 
-def process_csv(text: str, delimiter: str, rel: str, records: list, psn_map: dict) -> str:
+def _is_json_doc(data: Any) -> bool:
+    """Return True when JSON represents a single document/FHIR Bundle rather than a record list."""
+    return (
+        not isinstance(data, dict)
+        or data.get("resourceType") == "Bundle"
+        or isinstance(data.get("patient"), dict)
+        or not any(
+            isinstance(v, list) and v and all(isinstance(x, dict) for x in v)
+            for v in data.values()
+        )
+    )
+
+
+def _register_file_records(
+    text: str, ext: str, rel: str, resolver: IdentityResolver
+) -> None:
+    """Pass 1 helper: extract raw record identities matching Pass 2 locators."""
+    if ext in (".csv", ".tsv"):
+        rows = list(csv.reader(io.StringIO(text, newline=""), delimiter="\t" if ext == ".tsv" else ","))
+        if not rows:
+            return
+        header, body = rows[0], rows[1:]
+        for i, row in enumerate(body):
+            row_dict = {header[j]: row[j] if j < len(row) else "" for j in range(len(header))}
+            resolver.add_record(rel, f"row:{i}", row_dict)
+    elif ext == ".json":
+        data = json.loads(text)
+        if _is_json_doc(data):
+            resolver.add_record(rel, "doc", data if isinstance(data, dict) else {})
+        else:
+            meta: dict[str, Any] = {}
+            if isinstance(data.get("_export_meta"), dict):
+                meta["_export_meta"] = data["_export_meta"]
+            if isinstance(data.get("facility"), dict):
+                meta["facility"] = data["facility"]
+            for k, v in data.items():
+                if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
+                    pointer_key = k.replace("~", "~0").replace("/", "~1")
+                    for i, item in enumerate(v):
+                        fields = {**meta, **item} if meta else item
+                        resolver.add_record(rel, f"/{pointer_key}/{i}", fields)
+    else:
+        resolver.add_record(rel, "doc", {}, text)
+
+
+def process_csv(text: str, delimiter: str, rel: str, records: list, resolver: IdentityResolver) -> str:
     rows = list(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter))
     if not rows:
         return ""
@@ -169,7 +214,7 @@ def process_csv(text: str, delimiter: str, rel: str, records: list, psn_map: dic
     w.writerow(header)  # TODO(team): rename a header only if it contains PII
     for i, row in enumerate(body):
         loc = f"row:{i}"
-        pid = psn_map.get((rel, loc))
+        pid = resolver.get_patient_id(rel, loc)
         w.writerow([clean_text(c) for c in row])
         records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
         Stats.records += 1
@@ -177,13 +222,11 @@ def process_csv(text: str, delimiter: str, rel: str, records: list, psn_map: dic
     return buf.getvalue()
 
 
-def process_json(text: str, rel: str, records: list, psn_map: dict) -> str:
+def process_json(text: str, rel: str, records: list, resolver: IdentityResolver) -> str:
     data = json.loads(text)
-    is_doc = not isinstance(data, dict) or data.get("resourceType") == "Bundle" or not any(
-        isinstance(v, list) and v and all(isinstance(x, dict) for x in v) for v in data.values())
-    if is_doc:  # FHIR Bundle or single object: one record for the whole file
+    if _is_json_doc(data):  # FHIR Bundle, single-patient report, or single object
         loc = "doc"
-        pid = psn_map.get((rel, loc))
+        pid = resolver.get_patient_id(rel, loc)
         records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
         Stats.records += 1
         Stats.linked += pid is not None
@@ -193,7 +236,7 @@ def process_json(text: str, rel: str, records: list, psn_map: dict) -> str:
                 for i, _ in enumerate(v):
                     pointer_key = k.replace("~", "~0").replace("/", "~1")
                     loc = f"/{pointer_key}/{i}"
-                    pid = psn_map.get((rel, loc))
+                    pid = resolver.get_patient_id(rel, loc)
                     records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
                     Stats.records += 1
                     Stats.linked += pid is not None
@@ -201,9 +244,9 @@ def process_json(text: str, rel: str, records: list, psn_map: dict) -> str:
     return json.dumps(clean_value(data), ensure_ascii=False, indent=2) + "\n"
 
 
-def process_text(text: str, rel: str, records: list, psn_map: dict) -> str:
+def process_text(text: str, rel: str, records: list, resolver: IdentityResolver) -> str:
     loc = "doc"
-    pid = psn_map.get((rel, loc))
+    pid = resolver.get_patient_id(rel, loc)
     records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
     Stats.records += 1
     Stats.linked += pid is not None
@@ -229,19 +272,35 @@ def main() -> int:
     a = ap.parse_args()
     t0 = time.monotonic()
     inp, out = Path(a.input), Path(a.output)
-    secret = os.environ.get("RAKSHA_SECRET", "").encode()
-    if not secret:
+    if not SECRET:
         print("ERROR: RAKSHA_SECRET must be set in environment", file=sys.stderr)
         return 1
 
-    psn_map = build_pseudonym_map(inp, secret)
+    psn_map_paths = sorted(p for p in inp.rglob("*") if p.is_file())
+    sys.setrecursionlimit(5000)
+
+    # Pass 1: collect and resolve identities across all parseable files before redaction.
+    resolver = IdentityResolver(pseudonym_fn=pseudonym)
+    for path in psn_map_paths:
+        rel = path.relative_to(inp).as_posix()
+        raw = path.read_bytes()
+        ext = path.suffix.lower()
+        try:
+            if ext not in (".csv", ".tsv", ".json", ".txt") or not raw.strip():
+                continue
+            text = decode(raw)
+            if text is None:
+                continue
+            _register_file_records(text, ext, rel, resolver)
+        except (ValueError, RecursionError, UnicodeError, csv.Error):
+            continue
+    resolver.resolve_all()
 
     san = out / "sanitized"
     san.mkdir(parents=True, exist_ok=True)
     files, records = [], []
-    sys.setrecursionlimit(5000)
 
-    for path in sorted(p for p in inp.rglob("*") if p.is_file()):
+    for path in psn_map_paths:
         rel = path.relative_to(inp).as_posix()
         raw = path.read_bytes()
         entry: dict[str, str | None] = {"input_sha256": hashlib.sha256(raw).hexdigest()}
@@ -256,11 +315,11 @@ def main() -> int:
                 raise ValueError("undecodable_text")
             # TODO(team): a file NAME can contain PII: rename it and report the new path
             if ext in (".csv", ".tsv"):
-                result = process_csv(text, "\t" if ext == ".tsv" else ",", rel, records, psn_map)
+                result = process_csv(text, "\t" if ext == ".tsv" else ",", rel, records, resolver)
             elif ext == ".json":
-                result = process_json(text, rel, records, psn_map)
+                result = process_json(text, rel, records, resolver)
             else:
-                result = process_text(text, rel, records, psn_map)
+                result = process_text(text, rel, records, resolver)
             dest = san / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(result, encoding="utf-8", newline="")
