@@ -362,6 +362,35 @@ def decode(raw: bytes) -> str | None:
     return None
 
 
+def check_nesting_depth(text: str, max_depth: int = 25) -> None:
+    """Scan JSON/text for nesting depth of { } and [ ] outside string literals.
+    Raises ValueError("excessive_depth") if depth exceeds max_depth.
+    """
+    depth = 0
+    in_string = False
+    escape = False
+    for ch in text:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            if in_string:
+                escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in ("{", "["):
+            depth += 1
+            if depth > max_depth:
+                raise ValueError("excessive_depth")
+        elif ch in ("}", "]"):
+            if depth > 0:
+                depth -= 1
+
+
 def _is_json_doc(data: Any) -> bool:
     """Return True when JSON represents a single document/FHIR Bundle rather than a record list."""
     return (
@@ -388,6 +417,7 @@ def _register_file_records(
             row_dict = {header[j]: row[j] if j < len(row) else "" for j in range(len(header))}
             resolver.add_record(rel, f"row:{i}", row_dict)
     elif ext == ".json":
+        check_nesting_depth(text, max_depth=25)
         data = json.loads(text)
         if _is_json_doc(data):
             resolver.add_record(rel, "doc", data if isinstance(data, dict) else {})
@@ -1075,13 +1105,20 @@ def main() -> int:
     Stats.suppressed = 0
 
     psn_map_paths = sorted(p for p in inp.rglob("*") if p.is_file())
-    sys.setrecursionlimit(5000)
 
     # Pass 1: collect and resolve identities across all parseable files before redaction.
     resolver = IdentityResolver(pseudonym_fn=pseudonym, date_shift_fn=date_shift_days)
     for path in psn_map_paths:
+        try:
+            if path.is_symlink() or not path.resolve().is_relative_to(inp.resolve()):
+                continue
+        except (OSError, RuntimeError):
+            continue
         rel = path.relative_to(inp).as_posix()
-        raw = path.read_bytes()
+        try:
+            raw = path.read_bytes()
+        except (OSError, RuntimeError):
+            continue
         ext = path.suffix.lower()
         try:
             if ext not in (".csv", ".tsv", ".json", ".txt") or not raw.strip():
@@ -1102,10 +1139,22 @@ def main() -> int:
 
     for path in psn_map_paths:
         rel = path.relative_to(inp).as_posix()
-        raw = path.read_bytes()
+        is_symlink = path.is_symlink()
+        try:
+            is_escaped = not path.resolve().is_relative_to(inp.resolve())
+        except (OSError, RuntimeError):
+            is_escaped = True
+
+        try:
+            raw = path.read_bytes()
+        except (OSError, RuntimeError):
+            raw = b""
+
         entry: dict[str, str | None] = {"input_sha256": hashlib.sha256(raw).hexdigest()}
         ext = path.suffix.lower()
         try:
+            if is_symlink or is_escaped:
+                raise ValueError("symlink_traversal")
             if ext not in (".csv", ".tsv", ".json", ".txt"):
                 raise ValueError("unsupported_format")
             if not raw.strip():
@@ -1115,12 +1164,13 @@ def main() -> int:
                 raise ValueError("mislabeled_format")
             if b"\xff\xfe\xc3" in raw:
                 raise ValueError("corrupt_bytes")
-            if b'{"level":' in raw and raw.count(b'{"level":') > 20:
-                raise ValueError("excessive_depth")
 
             text = decode(raw)
             if text is None:
                 raise ValueError("undecodable_text")
+
+            if ext == ".json":
+                check_nesting_depth(text, max_depth=25)
 
             out_rel = sanitize_filename(rel, gazetteer)
             if ext in (".csv", ".tsv"):
@@ -1136,7 +1186,12 @@ def main() -> int:
         # pyrefly: ignore[unreachable-except-clause]
         except (ValueError, RecursionError, UnicodeError, csv.Error, json.JSONDecodeError) as exc:
             # Fail safe: never copy what we could not clean. The reason holds no file content.
-            reason = str(exc) if isinstance(exc, ValueError) and str(exc).isidentifier() else type(exc).__name__
+            if isinstance(exc, RecursionError):
+                reason = "excessive_depth"
+            elif isinstance(exc, ValueError) and str(exc).isidentifier():
+                reason = str(exc)
+            else:
+                reason = type(exc).__name__
             entry.update(output=None, status="quarantined", reason=reason)
         files.append(entry)
 

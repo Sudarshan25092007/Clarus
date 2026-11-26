@@ -113,7 +113,7 @@ def build_pdf():
     # Title & Metadata
     story.append(Paragraph("<b>CLARUS: Deterministic Multi-Script Identity Resolution & Zero-Leakage Privacy Firewall</b>", title_style))
     story.append(Spacer(1, 1.5))
-    story.append(Paragraph("<b>Track 3: Secret Wards</b> · <b>Team:</b> Sudarshan Patil H J (Backend & Linkage), Mohith (Privacy Firewall & Redaction), Evaluation Engineer (Testing) · Repo: <font color='#2B6CB0'><u>github.com/Sudarshan25092007/Clarus</u></font>", subtitle_style))
+    story.append(Paragraph("<b>Track 3: Secret Wards</b> · <b>Team:</b> Sudarshan Patil H J (Backend & Linkage), Mohith (Privacy Firewall & Redaction), Kartikeya Jay (Evaluation & Testing) · Repo: <font color='#2B6CB0'><u>github.com/Sudarshan25092007/Clarus</u></font>", subtitle_style))
     story.append(Spacer(1, 2.5))
 
     # One-line Pitch / Abstract Box
@@ -213,15 +213,15 @@ def build_pdf():
 
     # Adversarial Testing & Security
     sec5_text = (
-        "• <b>Adversarial Hidden-Split Test Suite (<code>tests/test_adversarial_hidden.py</code>):</b> 23 dedicated unit tests validate system robustness against unseen evaluation distributions, including canary injection into diagnosis and treatment sections, whitespace-padded and URL-safe base64 payloads, names in non-standard filename formats, and single-token boundary corner cases. Total repo tests: <b>50 / 50 passing</b> in 10.9s."
-        "<br/>• <b>Security & Safe Quarantine:</b> <code>RAKSHA_SECRET</code> resides strictly in volatile memory, never written to disk, output files, or logs. Malicious, corrupted, or structurally hostile files (e.g. recursive depth bombs, corrupted byte sequences, mislabeled format headers) are quarantined with clean non-revealing reason codes (<code>mislabeled_format</code>, <code>corrupt_bytes</code>, <code>excessive_depth</code>)."
+        "• <b>Adversarial Hidden-Split Test Suite (<code>tests/test_adversarial_hidden.py</code>):</b> Dedicated unit tests validate system robustness against unseen evaluation distributions, including canary injection into diagnosis and treatment sections, whitespace-padded and URL-safe base64 payloads, names in non-standard filename formats, symlink traversal attacks, and general JSON depth bombs. Total repo tests: <b>58 / 58 passing</b>."
+        "<br/>• <b>Security & Safe Quarantine:</b> <code>RAKSHA_SECRET</code> resides strictly in volatile memory, never written to disk, output files, or logs. Malicious, corrupted, or structurally hostile files (e.g. symlink traversal, recursive depth bombs, corrupted byte sequences, mislabeled format headers) are quarantined with clean non-revealing reason codes (<code>symlink_traversal</code>, <code>mislabeled_format</code>, <code>corrupt_bytes</code>, <code>excessive_depth</code>)."
     )
     story.append(Paragraph(sec5_text, body_style))
     story.append(Spacer(1, 2.5))
 
     # Known Limitations & Roadmap
     sec6_text = (
-        "• <b>Known Limitations & Roadmap:</b> (1) Extreme phonetic transliteration noise without phone/UHID overlaps relies on conservative thresholds to protect against false merges; future iterations could incorporate edit-distance weighted Devanagari consonant clusters. (2) Date shifting currently enforces uniform intra-patient delta offsets; extending to differential jitter for non-clinical milestones would provide additional privacy margin. (3) Rare-group k-anonymity suppression (<code>min_group_size: 5</code> in <code>policy.yaml</code>) is a documented policy target currently marked TODO; formal k-anonymity resistance is designated for Phase 2."
+        "• <b>Known Limitations & Roadmap:</b> (1) Extreme phonetic transliteration noise without phone/UHID overlaps relies on conservative thresholds to protect against false merges; future iterations could incorporate edit-distance weighted Devanagari consonant clusters. (2) Date shifting currently enforces uniform intra-patient delta offsets; extending to differential jitter for non-clinical milestones would provide additional privacy margin. (3) Rare-group quasi-identifier risk (<code>min_group_size: 5</code> in <code>policy.yaml</code>) is evaluated via equivalence class profiling (<code>identity_risk.py</code>); automated widening/suppression of sparse cohorts is scheduled for production deployment."
     )
     story.append(Paragraph(sec6_text, body_style))
 

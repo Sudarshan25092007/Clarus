@@ -136,7 +136,8 @@ The following metrics were measured on the official practice dataset (`dev/input
 - **DPDP Act 2023 & DPDP Rules 2025:** Architecturally informed by Rule 6 security safeguards (obfuscation, in-memory secret handling, and PII-free operational logging) and Rule 16 / Schedule II research anonymization concepts. Encryption-at-rest is designated for Phase 2 implementation.
 - **ABDM FHIR R4 IG v6.5.0:** Structural preservation of FHIR Document Bundles (Discharge Summaries, Diagnostic Reports, Prescriptions) while stripping direct identifiers (`meta.source`, `subject.display`, `identifier` values).
 - **Zero-Secret Persistence:** `RAKSHA_SECRET` is held purely in volatile memory. It is never logged, persisted, or leaked to outputs. Repeated runs with the same secret yield byte-identical outputs; different secrets yield unlinkable pseudonyms.
-- **Quasi-Identifier Policy & Roadmap:** Per-patient date shifting (`date_shift_max_days: 180`) and 5-year age banding (`age_band_years: 5`) are active in the pipeline. Note: `min_group_size: 5` in [`config/policy.yaml`](config/policy.yaml) is a documented policy target currently marked TODO; rare-group suppression and formal k-anonymity resistance are designated for Phase 2.
+- **Hostile Input & Quarantine Hardening:** Proactively quarantines path traversal attempts (symlinks resolving outside the input root), arbitrary-key recursive JSON depth bombs (O(N) depth scanner capped at `max_depth=25`), corrupt byte sequences, and mislabeled format headers with clean non-revealing error codes (`symlink_traversal`, `excessive_depth`, `corrupt_bytes`, `mislabeled_format`).
+- **Quasi-Identifier Policy & Risk Evaluation:** Per-patient date shifting (`date_shift_max_days: 180`) and 5-year age banding (`age_band_years: 5`) are active in the pipeline. Equivalence class risk is quantified using [`starter/identity_risk.py`](starter/identity_risk.py) (`compute_quasi_identifier_risk`), profiling k-anonymity across demographic cohorts relative to `min_group_size: 5` in [`config/policy.yaml`](config/policy.yaml).
 
 ---
 
@@ -146,11 +147,11 @@ Informed by deep research into privacy-preserving record linkage (PPRL), Indic c
 
 ### Current Limitations
 1. **Unseen Transliteration Variants:** When patient pairs lack overlapping phone numbers or UHIDs and exhibit severe transliteration noise across scripts, Clarus defaults to conservative non-merging to prevent catastrophic false merges.
-2. **Quasi-Identifier Policy Status:** The `min_group_size` parameter in `config/policy.yaml` is currently a documented specification; rare-group k-anonymity suppression is not yet enforced in production.
+2. **Quasi-Identifier Policy Status:** The `min_group_size: 5` threshold in `config/policy.yaml` is measured and profiled via `identity_risk.py` equivalence class analysis; automated suppression/widening of rare demographic buckets is scheduled for production deployment.
 3. **Cross-Hospital Domain Shift:** Research demonstrates that within-hospital clinical de-identification models degrade significantly when transferred across institutions. Our deterministic rules and gazetteer must be evaluated on held-out multi-hospital splits.
 
 ### Engineering & ML Roadmap
-- **Phase 1 (Current Prototype):** Safe deterministic baseline: 3-key orthogonal blocking, constrained graph clustering, bounded mask-and-restore regex shield, keyed HMAC-SHA256 pseudonyms, 50-test acceptance suite.
+- **Phase 1 (Current Prototype):** Safe deterministic baseline: 3-key orthogonal blocking, constrained graph clustering, bounded mask-and-restore regex shield, keyed HMAC-SHA256 pseudonyms, input symlink & depth protection, 58-test acceptance and adversarial suite.
 - **Phase 2 (Probabilistic Linkage & Indic NER):**
   - Integrate [Splink](https://github.com/moj-analytical-services/splink) (DuckDB-backed Fellegi-Sunter) for probabilistic matching on non-blocked quasi-identifiers, calibrating m/u probabilities on held-out pairs.
   - Evaluate [LibIndic Soundex](https://github.com/libindic/soundex) for phonetic blocking across Devanagari and Latin name variants.
@@ -189,7 +190,7 @@ python check_submission.py --repo . --run
 
 ### Run Test Suites
 ```bash
-# Run the complete 50-test suite across unit, acceptance, and adversarial cases:
+# Run the complete 58-test suite across unit, acceptance, and adversarial cases:
 python3 -m unittest discover tests
 
 # Run specific test suites:
@@ -216,12 +217,22 @@ python3 scripts/generate_brief_pdf.py
 | [`starter/main.py`](starter/main.py) | Two-pass pipeline orchestrator, streaming reader/writer, quarantine engine |
 | [`starter/identity.py`](starter/identity.py) | Multi-format identity extractor across clinical, lab, OPD, billing, and FHIR files |
 | [`starter/identity_redactor.py`](starter/identity_redactor.py) | Bounded mask-and-restore clinical shield, gazetteer builder, multi-channel PII redactor |
+| [`starter/identity_risk.py`](starter/identity_risk.py) | Quasi-identifier risk evaluation and k-anonymity equivalence class analyzer |
 | [`starter/identity_*.py`](starter/) | Linkage modules: adapters, blocking, pairwise features, decision tiers, constrained clustering |
 | [`docs/PROJECT_BRIEF.pdf`](docs/PROJECT_BRIEF.pdf) | Official 2-page Project Brief PDF for competition judges |
 | [`brief/PROJECT_BRIEF_TEMPLATE.md`](brief/PROJECT_BRIEF_TEMPLATE.md) | Full markdown source of the Project Brief |
 | [`scripts/generate_brief_pdf.py`](scripts/generate_brief_pdf.py) | Automated ReportLab script generating the exact 2-page brief PDF |
-| [`tests/`](tests/) | 50 unit and acceptance tests including `test_adversarial_hidden.py` |
+| [`tests/`](tests/) | 58 unit, acceptance, and adversarial hidden-eval tests |
 | [`dev/`](dev/) | Practice input dataset (`dev/input/`) and ground truth (`dev/truth/`) |
 | [`check_submission.py`](check_submission.py) | Official pre-submit validation runner (checks contract, secrets, PDF) |
 | [`check_dev.py`](check_dev.py) | Official scoring tool evaluating PII leakage, canaries, utility, and linkage |
+
+---
+
+## Team
+
+- **Sudarshan Patil H J** — Backend Infrastructure & Linkage Engine
+- **Mohith** — Privacy Firewall & Clinical Redaction / ML Owner
+- **Kartikeya Jay** — Evaluation & Compliance / Verification & Testing
+
 
