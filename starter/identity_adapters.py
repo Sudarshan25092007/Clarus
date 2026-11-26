@@ -181,3 +181,82 @@ def extract_dhh_json(path: Path | str) -> list[dict]:
         records.append(normalize_identity(raw_record))
 
     return records
+
+
+# ---------------------------------------------------------------------------
+# Arogya Legacy CSV Adapter
+# ---------------------------------------------------------------------------
+
+def extract_arogya_legacy_csv(path: Path | str) -> list[dict]:
+    """Extract and normalize patient identities from Arogya legacy CSV format.
+
+    Handles CP1252/Windows-1252 encoding and separate FirstName/LastName columns.
+    Preserves row location 'row:0', 'row:1', etc. (excluding header).
+    """
+    p = Path(path)
+    raw = p.read_bytes()
+    # Decode cp1252
+    for enc in ("cp1252", "utf-8", "latin1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        text = raw.decode("utf-8", errors="replace")
+
+    rel_path = _get_rel_path(p)
+    records: list[dict] = []
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    if not reader.fieldnames:
+        return records
+
+    for idx, row in enumerate(reader):
+        first = (row.get("FirstName") or "").strip()
+        last = (row.get("LastName") or "").strip()
+        full_name = f"{first} {last}".strip() or None
+
+        raw_record = {
+            "name": full_name,
+            "age": None,  # Arogya legacy has DOB instead of Age column
+            "gender": row.get("Sex"),
+            "phone": row.get("Phone"),
+            "relative_name": row.get("Guardian"),
+            "relative_relation": None,  # Extracted from Guardian string (e.g. 'S/O ...')
+            "uhid": row.get("PatientID"),
+            "village": row.get("City"),
+            "source_file": rel_path,
+            "record_loc": f"row:{idx}",
+        }
+        records.append(normalize_identity(raw_record))
+
+    return records
+
+
+# ---------------------------------------------------------------------------
+# Registration Aggregator
+# ---------------------------------------------------------------------------
+
+def extract_all_registration_records(reg_dir: Path | str) -> list[dict]:
+    """Scan a registration folder and extract normalized records using the right adapter."""
+    p = Path(reg_dir)
+    all_records: list[dict] = []
+    if not p.is_dir():
+        return all_records
+
+    for f in sorted(p.iterdir()):
+        name_lower = f.name.lower()
+        if not f.is_file():
+            continue
+        # Skip duplicate exports if desired or include them
+        if "sanjeevani_registration" in name_lower and f.suffix == ".csv":
+            all_records.extend(extract_sanjeevani_csv(f))
+        elif "jeevanjyoti" in name_lower and f.suffix == ".tsv":
+            all_records.extend(extract_jeevanjyoti_tsv(f))
+        elif "dhh" in name_lower and f.suffix == ".json":
+            all_records.extend(extract_dhh_json(f))
+        elif "arogya" in name_lower and f.suffix == ".csv":
+            all_records.extend(extract_arogya_legacy_csv(f))
+
+    return all_records
+
