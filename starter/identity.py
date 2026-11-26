@@ -1,9 +1,11 @@
-"""Phase 1 raw patient identity extraction and resolver skeleton (stdlib only)."""
+"""Phase 1 & 2 patient identity extraction, multilingual normalization, and resolver skeleton (stdlib only)."""
 from __future__ import annotations
 
 import base64
 import binascii
+import datetime as dt
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -30,7 +32,7 @@ _RE_REL_PAREN_OR_INLINE = re.compile(
     r"\b([SDWC]/[Oo])\s+([^\n,();|\[\]]{2,50})"
 )
 _RE_DISCHARGE_NOTE_LEAD = re.compile(
-    r"^\s*([A-Z][a-zA-Z.\s]{1,40}?),\s*([SDWC]/[Oo])\s+([^\n,;]{2,50}?)(?:,|$)",
+    r"^[ \t]*([A-Z][a-zA-Z. ]{1,40}?),\s*([SDWC]/[Oo])\s+([^\n,;]{2,50}?)(?:,|$)",
     re.MULTILINE,
 )
 _RE_WHATSAPP_REPORT = re.compile(
@@ -81,8 +83,17 @@ _ADDR_NOISE_PREFIXES = (
     "opp",
     "behind",
     "c/o",
+)
+_ADDR_LANDMARK_FRAGMENTS = (
     "के पास",
     "के पीछे",
+    "के सामने",
+    "mandir",
+    "masjid",
+    "gurudwara",
+    "temple",
+    "school",
+    "bhawan",
 )
 
 # Canonical alias sets for normalized CSV/TSV/JSON keys.
@@ -378,7 +389,12 @@ def _extract_address_details(addr_text: str, rec: RecordIdentity) -> None:
             m_t = _RE_TEHSIL_BEFORE.search(s)
             if m_t:
                 cand = m_t.group(1).strip()
-                if cand and not cand.lower().startswith(_ADDR_NOISE_PREFIXES):
+                low_cand = cand.lower()
+                if (
+                    cand
+                    and not low_cand.startswith(_ADDR_NOISE_PREFIXES)
+                    and not any(frag in low_cand for frag in _ADDR_LANDMARK_FRAGMENTS)
+                ):
                     rec.village = cand
 
 
@@ -789,3 +805,540 @@ def extract_identity(
 
     rec.hospital_hint = _infer_hospital_hint(relpath, raw_fields or {}, raw_text, rec.mrns)
     return rec
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Multilingual & Format Normalization
+# ---------------------------------------------------------------------------
+
+_NUKTA = "\u093c"
+_VIRAMA = "\u094d"
+_ANUSVARA = "\u0902"
+_CHANDRABINDU = "\u0901"
+_VISARGA = "\u0903"
+
+_DEVA_INDEPENDENT_VOWELS: dict[str, str] = {
+    "अ": "a",
+    "आ": "a",
+    "इ": "i",
+    "ई": "ee",
+    "उ": "u",
+    "ऊ": "oo",
+    "ऋ": "ri",
+    "ए": "e",
+    "ऐ": "ai",
+    "ओ": "o",
+    "औ": "au",
+    "ऑ": "o",
+    "ऍ": "e",
+}
+
+_DEVA_MATRAS: dict[str, str] = {
+    "ा": "a",
+    "ि": "i",
+    "ी": "i",
+    "ु": "u",
+    "ू": "u",
+    "ृ": "ri",
+    "े": "e",
+    "ै": "ai",
+    "ो": "o",
+    "ौ": "au",
+    "ॉ": "o",
+    "ॅ": "e",
+}
+
+_DEVA_CONSONANTS: dict[str, str] = {
+    "क": "k",
+    "क़": "q",
+    "क" + _NUKTA: "q",
+    "ख": "kh",
+    "ख़": "kh",
+    "ख" + _NUKTA: "kh",
+    "ग": "g",
+    "ग़": "gh",
+    "ग" + _NUKTA: "gh",
+    "घ": "gh",
+    "ङ": "n",
+    "च": "ch",
+    "छ": "chh",
+    "ज": "j",
+    "ज़": "z",
+    "ज" + _NUKTA: "z",
+    "झ": "jh",
+    "ञ": "n",
+    "ट": "t",
+    "ठ": "th",
+    "ड": "d",
+    "ड़": "r",
+    "ड" + _NUKTA: "r",
+    "ढ": "dh",
+    "ढ़": "rh",
+    "ढ" + _NUKTA: "rh",
+    "ण": "n",
+    "त": "t",
+    "थ": "th",
+    "द": "d",
+    "ध": "dh",
+    "न": "n",
+    "प": "p",
+    "फ": "f",
+    "फ़": "f",
+    "फ" + _NUKTA: "f",
+    "ब": "b",
+    "भ": "bh",
+    "म": "m",
+    "य": "y",
+    "य़": "y",
+    "य" + _NUKTA: "y",
+    "र": "r",
+    "ल": "l",
+    "ळ": "l",
+    "व": "v",
+    "श": "sh",
+    "ष": "sh",
+    "स": "s",
+    "ह": "h",
+}
+
+_DEVA_LABIALS = frozenset({"प", "फ", "फ़", "ब", "भ", "म"})
+
+_NAME_TOKEN_ALIASES: dict[str, str] = {
+    "md": "mohammad",
+    "mohd": "mohammad",
+    "muhammad": "mohammad",
+    "mohammed": "mohammad",
+    "mohamad": "mohammad",
+    "muhamad": "mohammad",
+}
+
+_LEADING_TITLES = frozenset(
+    {"shri", "shree", "sri", "smt", "shrimati", "mr", "mrs", "ms", "miss", "dr", "prof"}
+)
+_LEADING_OPTIONAL_TITLES = frozenset({"kumari", "km"})
+_TRAILING_HONORIFICS = frozenset(
+    {
+        "ji",
+        "sahab",
+        "saheb",
+        "saab",
+        "babu",
+        "amma",
+        "bhaiya",
+        "bhaiyya",
+        "bhai",
+        "didi",
+        "behenji",
+        "behanji",
+        "bahanji",
+        "chacha",
+        "chachu",
+        "mama",
+        "dada",
+        "dadi",
+        "nana",
+        "nani",
+        "devi",
+    }
+)
+
+_CLINICAL_TRAP_WORDS = frozenset(
+    {
+        "fever",
+        "cough",
+        "pain",
+        "headache",
+        "diabetes",
+        "hypertension",
+        "disease",
+        "addison",
+        "typhoid",
+        "malaria",
+        "dengue",
+        "k/c/o",
+    }
+)
+
+_REL_CANON_MAP: dict[str, str] = {
+    "s/o": "S/o",
+    "son of": "S/o",
+    "d/o": "D/o",
+    "daughter of": "D/o",
+    "w/o": "W/o",
+    "wife of": "W/o",
+    "husband": "W/o",
+    "c/o": "C/o",
+    "care of": "C/o",
+    "father": "Father",
+    "mother": "Mother",
+    "attendant": "Attendant",
+    "relative": "Guardian",
+    "guardian": "Guardian",
+}
+
+
+@dataclass
+class NormalizedIdentity:
+    """Canonicalized patient identity attributes for blocking, scoring, and matching."""
+
+    relpath: str
+    loc: str
+    hospital_hint: str | None = None
+    norm_names: list[str] = field(default_factory=list)
+    name_tokens: list[list[str]] = field(default_factory=list)
+    name_skeletons: list[str] = field(default_factory=list)
+    norm_relatives: list[tuple[str, str]] = field(default_factory=list)
+    norm_phones: list[str] = field(default_factory=list)
+    norm_emails: list[str] = field(default_factory=list)
+    strong_ids: set[tuple[str, str]] = field(default_factory=set)
+    dob_iso: str | None = None
+    age_approx: int | None = None
+    gender: str | None = None
+    norm_village: str | None = None
+    norm_pin: str | None = None
+
+
+def _is_deva_letter(ch: str) -> bool:
+    return "\u0900" <= ch <= "\u097f" and not ("\u0966" <= ch <= "\u096f")
+
+
+def devanagari_to_latin(text: str) -> str:
+    """Transliterate Unicode Devanagari text and digits to readable ASCII Latin."""
+    if not text:
+        return ""
+    s = _ascii_digits(unicodedata.normalize("NFC", text))
+    out: list[str] = []
+    n = len(s)
+    i = 0
+
+    while i < n:
+        ch = s[i]
+        # Check two-character consonant + nukta sequences (Unicode NFC keeps them decomposed).
+        pair = s[i : i + 2] if i + 1 < n and s[i + 1] == _NUKTA else ""
+        cons = _DEVA_CONSONANTS.get(pair) if pair else _DEVA_CONSONANTS.get(ch)
+        step = 2 if (pair and cons is not None) else 1
+
+        if cons is not None:
+            # Common Sanskrit/Hindi conjunct ज्ञ -> gy
+            if (
+                ch == "ज"
+                and step == 1
+                and i + 2 < n
+                and s[i + 1] == _VIRAMA
+                and s[i + 2] == "ञ"
+            ):
+                out.append("gy")
+                i += 3
+                if i < n and s[i] in _DEVA_MATRAS:
+                    out.append(_DEVA_MATRAS[s[i]])
+                    i += 1
+                elif i < n and _is_deva_letter(s[i]):
+                    out.append("a")
+                continue
+
+            out.append(cons)
+            i += step
+            if i < n and s[i] in _DEVA_MATRAS:
+                out.append(_DEVA_MATRAS[s[i]])
+                i += 1
+            elif i < n and s[i] == _VIRAMA:
+                i += 1
+            elif i < n and s[i] in (_ANUSVARA, _CHANDRABINDU, _VISARGA):
+                # Inherent 'a' precedes nasalization/visarga on bare consonants.
+                out.append("a")
+            else:
+                # Word-final bare consonants drop inherent schwa; internal ones keep 'a'.
+                next_is_word_char = i < n and (
+                    s[i] in _DEVA_CONSONANTS
+                    or s[i] in _DEVA_INDEPENDENT_VOWELS
+                    or (i + 1 < n and s[i + 1] == _NUKTA)
+                )
+                if next_is_word_char:
+                    out.append("a")
+            continue
+
+        if ch in _DEVA_INDEPENDENT_VOWELS:
+            out.append(_DEVA_INDEPENDENT_VOWELS[ch])
+            i += 1
+            continue
+
+        if ch == _ANUSVARA:
+            next_ch = s[i + 1] if i + 1 < n else ""
+            out.append("m" if next_ch in _DEVA_LABIALS else "n")
+            i += 1
+            continue
+
+        if ch == _CHANDRABINDU:
+            out.append("n")
+            i += 1
+            continue
+
+        if ch == _VISARGA:
+            out.append("h")
+            i += 1
+            continue
+
+        if ch in (_NUKTA, _VIRAMA, "।"):
+            out.append(" " if ch == "।" else "")
+            i += 1
+            continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
+
+
+def normalize_name(raw: str) -> str:
+    """Normalize EN/HI/Hinglish name to clean lowercase Latin without titles/honorifics."""
+    if not raw:
+        return ""
+    latin = devanagari_to_latin(raw).lower()
+    cleaned = re.sub(r"[^a-z0-9\s]+", " ", latin)
+    raw_tokens = [t for t in cleaned.split() if t]
+    if not raw_tokens:
+        return ""
+
+    # Map common Muslim/Indian prefix abbreviations (Md./Mohd./Muhammad -> mohammad).
+    tokens = [_NAME_TOKEN_ALIASES.get(t, t) for t in raw_tokens]
+
+    while tokens and tokens[0] in _LEADING_TITLES:
+        tokens.pop(0)
+    if len(tokens) > 1 and tokens[0] in _LEADING_OPTIONAL_TITLES:
+        tokens.pop(0)
+    while len(tokens) > 1 and tokens[-1] in _TRAILING_HONORIFICS:
+        tokens.pop()
+
+    return " ".join(tokens)
+
+
+def _token_phonetic_skeleton(token: str) -> str:
+    """Reduce a normalized Latin name token to a cross-variant phonetic skeleton."""
+    t = token.lower()
+    if not t:
+        return ""
+
+    # Preserve leading vowel bucket (a/i/u) so Asha (as) != Usha (us) and Anita != Nita.
+    lead_vowel = ""
+    if t[0] in "aeiou":
+        if t[0] in ("a", "e"):
+            lead_vowel = "a"
+        elif t[0] == "i":
+            lead_vowel = "i"
+        else:
+            lead_vowel = "u"
+
+    # Protect 'ch'/'chh' before mapping remaining 'c' -> 'k'.
+    t = t.replace("ph", "f").replace("sh", "s")
+    t = t.replace("chh", "\x01").replace("ch", "\x01")
+    t = t.replace("kh", "k").replace("gh", "g").replace("bh", "b")
+    t = t.replace("dh", "d").replace("th", "t").replace("jh", "j")
+    t = t.replace("qu", "k").replace("q", "k").replace("w", "v").replace("x", "ks")
+    t = t.replace("ck", "k").replace("c", "k").replace("\x01", "c")
+
+    # Drop trailing vowel-glides and -ry/-iy endings ('pandey'/'pandeya'/'pande', 'vijay'/'vijai', 'tiwary'/'tiwari').
+    if len(t) > 3 and t.endswith(("eya", "aya")):
+        t = t[:-2]
+    elif len(t) > 2 and t.endswith(("ey", "ay", "oy", "uy", "ry")):
+        t = t[:-1]
+
+    # Drop internal vowels and collapse repeated consonants.
+    body = t[1:] if lead_vowel else t
+    consonants = [ch for ch in body if ch not in "aeiou" and ch.isalpha()]
+    deduped: list[str] = []
+    for ch in consonants:
+        if not deduped or deduped[-1] != ch:
+            deduped.append(ch)
+    if lead_vowel and deduped and deduped[0] == lead_vowel:
+        return "".join(deduped)
+    return lead_vowel + "".join(deduped)
+
+
+def phonetic_skeleton(norm_name: str) -> str:
+    """Build space-joined consonant/phonetic skeleton for a normalized name."""
+    parts = [_token_phonetic_skeleton(tok) for tok in norm_name.split() if tok]
+    return " ".join(p for p in parts if p)
+
+
+def normalize_phone(raw: str) -> str | None:
+    """Normalize Indian phone numbers to 10 ASCII digits starting with 6-9."""
+    if not raw:
+        return None
+    digits = re.sub(r"\D", "", _ascii_digits(raw))
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    elif len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    if len(digits) == 10 and digits[0] in "6789":
+        return digits
+    return None
+
+
+def normalize_dob(raw: str | None, hospital_hint: str | None = None) -> str | None:
+    """Parse DD/MM/YYYY, MM/DD/YYYY, or YYYY-MM-DD DOB strings into YYYY-MM-DD."""
+    if not raw:
+        return None
+    s = _ascii_digits(raw).strip()
+    if not s:
+        return None
+
+    m_iso = re.fullmatch(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", s)
+    if m_iso:
+        y, m, d = int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))
+        try:
+            return dt.date(y, m, d).isoformat()
+        except ValueError:
+            return None
+
+    m_num = re.fullmatch(r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})", s)
+    if m_num:
+        p1, p2, y = int(m_num.group(1)), int(m_num.group(2)), int(m_num.group(3))
+        if not (1900 <= y <= 2030):
+            return None
+        # Arogya legacy/discharge exports use MM/DD/YYYY; other facilities use DD/MM/YYYY.
+        order = ((p1, p2), (p2, p1)) if hospital_hint == "arogya" else ((p2, p1), (p1, p2))
+        for month, day in order:
+            try:
+                return dt.date(y, month, day).isoformat()
+            except ValueError:
+                continue
+    return None
+
+
+def normalize_gender(raw: str | None) -> str | None:
+    """Normalize English/Hindi gender strings into 'M', 'F', 'O', or None."""
+    if not raw:
+        return None
+    return _parse_gender(raw)
+
+
+def normalize_village(raw: str | None) -> str | None:
+    """Normalize village/locality string into clean lowercase Latin text."""
+    if not raw:
+        return None
+    low_raw = _ascii_digits(raw).strip().lower()
+    if any(frag in low_raw for frag in _ADDR_LANDMARK_FRAGMENTS):
+        return None
+    latin = devanagari_to_latin(raw).lower()
+    cleaned = re.sub(r"[^a-z0-9\s]+", " ", latin)
+    tokens = [t for t in cleaned.split() if t]
+    while tokens and tokens[0] in ("vill", "village", "gram"):
+        tokens.pop(0)
+    joined = " ".join(tokens)
+    if not joined or any(frag in joined for frag in ("ke pas", "ke piche", "ke samne")):
+        return None
+    return joined
+
+
+def normalize_pin(raw: str | None) -> str | None:
+    """Normalize 6-digit Indian PIN code."""
+    if not raw:
+        return None
+    digits = re.sub(r"\D", "", _ascii_digits(raw))
+    return digits if len(digits) == 6 else None
+
+
+def _normalize_strong_ids(rec: RecordIdentity) -> set[tuple[str, str]]:
+    strong: set[tuple[str, str]] = set()
+    for val in rec.abha:
+        digits = re.sub(r"\D", "", _ascii_digits(val))
+        if len(digits) == 14:
+            strong.add(("abha", digits))
+
+    for val in rec.aadhaar:
+        if "x" in val.lower():
+            # Masked Aadhaar (e.g. XXXX XXXX 5866) is not a unique strong ID.
+            continue
+        digits = re.sub(r"\D", "", _ascii_digits(val))
+        if len(digits) == 12:
+            strong.add(("aadhaar", digits))
+
+    for val in rec.pan:
+        cand = re.sub(r"\s+", "", _ascii_digits(val).upper())
+        if _RE_PAN.fullmatch(cand):
+            strong.add(("pan", cand))
+
+    for val in rec.insurance_ids:
+        cand = re.sub(r"[\s-]+", "", _ascii_digits(val).upper())
+        if cand:
+            strong.add(("insurance", cand))
+
+    for val in rec.mrns:
+        cand = re.sub(r"\s+", "", _ascii_digits(val).upper())
+        if not cand:
+            continue
+        # Preserve hospital prefix (SNJ/26/..., JJH-..., etc.); scope bare numeric MRNs.
+        if not re.search(r"[A-Z]", cand) and rec.hospital_hint:
+            cand = f"{rec.hospital_hint.upper()}:{cand}"
+        strong.add(("mrn", cand))
+
+    return strong
+
+
+def _normalize_relatives(relatives: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for raw_rel, raw_name in relatives:
+        low_name = raw_name.strip().lower()
+        if not low_name or any(w in low_name for w in _CLINICAL_TRAP_WORDS):
+            continue
+        rel_key = _REL_CANON_MAP.get(raw_rel.strip().lower(), raw_rel.strip())
+        if rel_key.upper() == "K/C/O":
+            continue
+        norm_rname = normalize_name(raw_name)
+        if not norm_rname:
+            continue
+        pair = (rel_key, norm_rname)
+        if pair not in out:
+            out.append(pair)
+    return out
+
+
+def normalize_identity(rec: RecordIdentity) -> NormalizedIdentity:
+    """Canonicalize all extracted raw attributes of a RecordIdentity."""
+    norm_names: list[str] = []
+    name_tokens: list[list[str]] = []
+    name_skeletons: list[str] = []
+
+    for raw_name in rec.names:
+        low = raw_name.strip().lower()
+        if not low or any(w in low for w in _CLINICAL_TRAP_WORDS):
+            continue
+        nn = normalize_name(raw_name)
+        if not nn:
+            continue
+        if nn not in norm_names:
+            norm_names.append(nn)
+            name_tokens.append(nn.split())
+        skel = phonetic_skeleton(nn)
+        if skel and skel not in name_skeletons:
+            name_skeletons.append(skel)
+
+    norm_phones: list[str] = []
+    for p in rec.phones:
+        np = normalize_phone(p)
+        if np and np not in norm_phones:
+            norm_phones.append(np)
+
+    norm_emails: list[str] = []
+    for em in rec.emails:
+        ne = em.strip().lower()
+        if ne and ne not in norm_emails:
+            norm_emails.append(ne)
+
+    return NormalizedIdentity(
+        relpath=rec.relpath,
+        loc=rec.loc,
+        hospital_hint=rec.hospital_hint,
+        norm_names=norm_names,
+        name_tokens=name_tokens,
+        name_skeletons=name_skeletons,
+        norm_relatives=_normalize_relatives(rec.relatives),
+        norm_phones=norm_phones,
+        norm_emails=norm_emails,
+        strong_ids=_normalize_strong_ids(rec),
+        dob_iso=normalize_dob(rec.dob, rec.hospital_hint),
+        age_approx=rec.age,
+        gender=normalize_gender(rec.gender),
+        norm_village=normalize_village(rec.village),
+        norm_pin=normalize_pin(rec.pin),
+    )
