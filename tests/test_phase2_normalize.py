@@ -80,6 +80,7 @@ class Phase2NormalizeTests(unittest.TestCase):
         self.assertEqual(normalize_name("Sunita amma"), "sunita")
         self.assertEqual(normalize_name("Asha ji"), "asha")
         self.assertEqual(normalize_name("Kamal Bhaiya"), "kamal")
+        self.assertEqual(normalize_name("Raju papa"), "raju")
         self.assertEqual(normalize_name("Smt. Geeta Devi"), "geeta")
         self.assertEqual(normalize_name("Shri Ramesh Kumar"), "ramesh kumar")
         self.assertEqual(normalize_name("Kumari Sunita"), "sunita")

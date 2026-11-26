@@ -1,4 +1,4 @@
-"""Phase 1-4 patient identity extraction, normalization, blocking, clustering, and HMAC keys (stdlib only)."""
+"""Phase 1-5 patient identity extraction, normalization, blocking, clustering, HMAC keys, and temporal helpers (stdlib only)."""
 from __future__ import annotations
 
 import base64
@@ -231,16 +231,31 @@ class RecordIdentity:
 
 
 class IdentityResolver:
-    """Patient identity resolver using blocking, conflict vetoes, and conflict-safe clustering."""
+    """Patient identity resolver using blocking, conflict vetoes, and conflict-safe clustering.
 
-    def __init__(self, pseudonym_fn: Callable[[str], str] | None = None) -> None:
+    Pass 2 Handoff API (for Member 1 & Member 3 integration):
+      * ``add_record(relpath, loc, raw_fields, raw_text="")`` — register raw records in Pass 1.
+      * ``resolve_all()`` — normalize, cluster, and compute per-cluster pseudonyms & day shifts.
+      * ``get_patient_id(relpath, loc)`` -> ``'PSN-XXXXXX'`` or ``None`` for non-patient/unlinked.
+      * ``get_date_shift_days(relpath, loc)`` -> deterministic non-zero ``int`` day offset or ``None``.
+      * ``shift_patient_date(relpath, loc, value)`` -> ``dt.date`` shifted by the cluster's offset.
+      * ``get_patient_key(relpath, loc)`` -> internal canonical key ONLY for Pass 2 helpers (never log/serialize).
+    """
+
+    def __init__(
+        self,
+        pseudonym_fn: Callable[[str], str] | None = None,
+        date_shift_fn: Callable[[str], int] | None = None,
+    ) -> None:
         self._pseudonym_fn = pseudonym_fn
+        self._date_shift_fn = date_shift_fn
         self.records: list[RecordIdentity] = []
         self.normalized: list[NormalizedIdentity] = []
         self.clusters: list[list[int]] = []
         self._by_locator: dict[tuple[str, str], RecordIdentity] = {}
         self._patient_ids: dict[tuple[str, str], str] = {}
         self._patient_keys: dict[tuple[str, str], str] = {}
+        self._date_shifts: dict[tuple[str, str], int] = {}
 
     def add_record(
         self, relpath: str, loc: str, raw_fields: dict, raw_text: str = ""
@@ -250,12 +265,18 @@ class IdentityResolver:
         self.records.append(rec)
         self._by_locator[(relpath, loc)] = rec
 
-    def resolve_all(self, pseudonym_fn: Callable[[str], str] | None = None) -> None:
+    def resolve_all(
+        self,
+        pseudonym_fn: Callable[[str], str] | None = None,
+        date_shift_fn: Callable[[str], int] | None = None,
+    ) -> None:
         """Run normalization, blocking, scoring, conflict-safe clustering, and compute PSN IDs."""
         fn = pseudonym_fn if pseudonym_fn is not None else self._pseudonym_fn
+        shift_fn = date_shift_fn if date_shift_fn is not None else self._date_shift_fn
         self.normalized = [normalize_identity(r) for r in self.records]
         self._patient_ids.clear()
         self._patient_keys.clear()
+        self._date_shifts.clear()
         self.clusters = []
 
         n = len(self.normalized)
@@ -344,11 +365,14 @@ class IdentityResolver:
                 )
                 patient_key = f"{base_key}|at:{min_rel}|{min_loc}"
             pid = fn(patient_key)
+            shift_days = shift_fn(patient_key) if shift_fn is not None else None
             for idx in idxs:
                 rec = self.records[idx]
                 loc_key = (rec.relpath, rec.loc)
                 self._patient_ids[loc_key] = pid
                 self._patient_keys[loc_key] = patient_key
+                if shift_days is not None:
+                    self._date_shifts[loc_key] = shift_days
 
     def get_patient_id(self, relpath: str, loc: str) -> str | None:
         """Return 'PSN-XXXXXX' or None if unlinked."""
@@ -357,6 +381,17 @@ class IdentityResolver:
     def get_patient_key(self, relpath: str, loc: str) -> str | None:
         """Return internal canonical key ONLY for shift_date() in Pass 2. Never serialize."""
         return self._patient_keys.get((relpath, loc))
+
+    def get_date_shift_days(self, relpath: str, loc: str) -> int | None:
+        """Return the cluster's deterministic non-zero day offset, or None for non-patient records."""
+        return self._date_shifts.get((relpath, loc))
+
+    def shift_patient_date(self, relpath: str, loc: str, value: dt.date) -> dt.date:
+        """Shift a patient date by the cluster's exact offset (no-op if non-patient/unlinked)."""
+        offset = self._date_shifts.get((relpath, loc))
+        if offset is None:
+            return value
+        return value + dt.timedelta(days=offset)
 
 
 def _ascii_digits(text: str) -> str:

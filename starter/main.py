@@ -33,7 +33,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from identity import IdentityResolver
+try:
+    from identity import IdentityResolver
+except ImportError:  # allow importing starter.main as a package from repo root
+    from starter.identity import IdentityResolver
 
 # --------------------------------------------------------------------------- policy
 def load_policy(path: Path) -> dict[str, int | str]:
@@ -280,7 +283,7 @@ def main() -> int:
     sys.setrecursionlimit(5000)
 
     # Pass 1: collect and resolve identities across all parseable files before redaction.
-    resolver = IdentityResolver(pseudonym_fn=pseudonym)
+    resolver = IdentityResolver(pseudonym_fn=pseudonym, date_shift_fn=date_shift_days)
     for path in psn_map_paths:
         rel = path.relative_to(inp).as_posix()
         raw = path.read_bytes()
