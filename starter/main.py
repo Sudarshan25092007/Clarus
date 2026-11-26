@@ -31,13 +31,14 @@ import re
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from identity_pipeline import build_pseudonym_map
 
 # --------------------------------------------------------------------------- policy
-def load_policy(path: Path) -> dict:
+def load_policy(path: Path) -> dict[str, int | str]:
     """Tiny `key: value` reader for config/policy.yaml (no PyYAML needed)."""
-    policy = {}
+    policy: dict[str, int | str] = {}
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
             line = line.split("#", 1)[0].strip()
@@ -210,9 +211,12 @@ def process_text(text: str, rel: str, records: list, psn_map: dict) -> str:
 
 
 def peak_rss_mb() -> float:
+    if sys.platform == "win32":
+        return 0.0
     try:
         import resource
-        r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        res: Any = resource
+        r = res.getrusage(res.RUSAGE_SELF).ru_maxrss
         return round(r / 1024 if sys.platform != "darwin" else r / 1048576, 1)
     except Exception:  # noqa: BLE001 - not available on every OS
         return 0.0
@@ -240,7 +244,7 @@ def main() -> int:
     for path in sorted(p for p in inp.rglob("*") if p.is_file()):
         rel = path.relative_to(inp).as_posix()
         raw = path.read_bytes()
-        entry = {"input_sha256": hashlib.sha256(raw).hexdigest()}
+        entry: dict[str, str | None] = {"input_sha256": hashlib.sha256(raw).hexdigest()}
         ext = path.suffix.lower()
         try:
             if ext not in (".csv", ".tsv", ".json", ".txt"):
@@ -261,6 +265,7 @@ def main() -> int:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(result, encoding="utf-8", newline="")
             entry.update(output=f"sanitized/{rel}", status="sanitized")
+        # pyrefly: ignore[unreachable-except-clause]
         except (ValueError, RecursionError, UnicodeError, csv.Error) as exc:
             # Fail safe: never copy what we could not clean. The reason holds no file content.
             reason = str(exc) if isinstance(exc, ValueError) and str(exc).isidentifier() else type(exc).__name__

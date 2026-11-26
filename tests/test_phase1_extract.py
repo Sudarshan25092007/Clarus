@@ -111,9 +111,14 @@ class Phase1ExtractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.dev_input = REPO_ROOT / "dev" / "input"
 
+    def _read_decoded(self, relpath: str) -> str:
+        text = _decode((self.dev_input / relpath).read_bytes())
+        assert text is not None, f"Failed to decode {relpath}"
+        return text
+
     def test_csv_registration_hindi_and_legacy(self) -> None:
         # Sanjeevani CSV (UTF-8-SIG)
-        snj = _decode((self.dev_input / "registration/sanjeevani_registration.csv").read_bytes())
+        snj = self._read_decoded("registration/sanjeevani_registration.csv")
         rows = list(csv.reader(io.StringIO(snj, newline="")))
         row0 = dict(zip(rows[0], rows[1]))
         rec0 = extract_identity("registration/sanjeevani_registration.csv", "row:0", row0)
@@ -131,7 +136,7 @@ class Phase1ExtractTests(unittest.TestCase):
         self.assertEqual(rec0.pin, "229073")
 
         # Jeevan Jyoti TSV (UTF-16, Hindi columns & Devanagari text)
-        jjh = _decode((self.dev_input / "registration/jeevanjyoti_patients.tsv").read_bytes())
+        jjh = self._read_decoded("registration/jeevanjyoti_patients.tsv")
         trows = list(csv.reader(io.StringIO(jjh, newline=""), delimiter="\t"))
         trow0 = dict(zip(trows[0], trows[1]))
         trec0 = extract_identity("registration/jeevanjyoti_patients.tsv", "row:0", trow0)
@@ -143,7 +148,7 @@ class Phase1ExtractTests(unittest.TestCase):
         self.assertEqual(trec0.pin, "225127")
 
     def test_json_dhh_and_fhir_bundle(self) -> None:
-        dhh = json.loads(_decode((self.dev_input / "registration/dhh_patients.json").read_bytes()))
+        dhh = json.loads(self._read_decoded("registration/dhh_patients.json"))
         p0 = {**{"facility": dhh["facility"]}, **dhh["patients"][0]}
         rec = extract_identity("registration/dhh_patients.json", "/patients/0", p0)
         self.assertEqual(rec.hospital_hint, "dhhardoi")
@@ -153,7 +158,7 @@ class Phase1ExtractTests(unittest.TestCase):
         self.assertEqual(rec.gender, "F")
         self.assertEqual(rec.pin, "241606")
 
-        bundle = json.loads(_decode((self.dev_input / "fhir/bundle_08fb8ae4.json").read_bytes()))
+        bundle = json.loads(self._read_decoded("fhir/bundle_08fb8ae4.json"))
         frec = extract_identity("fhir/bundle_08fb8ae4.json", "doc", bundle)
         self.assertEqual(frec.hospital_hint, "sanjeevani")
         self.assertIn("Shabana Bano", frec.names)
@@ -167,33 +172,33 @@ class Phase1ExtractTests(unittest.TestCase):
         self.assertEqual(frec.pin, "226183")
 
     def test_text_hinglish_hindi_and_clean_traps(self) -> None:
-        note = _decode((self.dev_input / "notes/nursing_adm000161.txt").read_bytes())
+        note = self._read_decoded("notes/nursing_adm000161.txt")
         nrec = extract_identity("notes/nursing_adm000161.txt", "doc", {}, note)
         self.assertIn("ADM000161", nrec.mrns)
         self.assertIn("Shahid sahab", nrec.names)
         self.assertIn("Mohd. Shahid", nrec.names)
         self.assertIn(("S/o", "Zubair"), nrec.relatives)
 
-        rx = _decode((self.dev_input / "prescriptions/rx_arogya_00030.txt").read_bytes())
+        rx = self._read_decoded("prescriptions/rx_arogya_00030.txt")
         rrec = extract_identity("prescriptions/rx_arogya_00030.txt", "doc", {}, rx)
         self.assertIn("मोहम्मद शाहिद", rrec.names)
         self.assertEqual(rrec.age, 39)
         self.assertEqual(rrec.village, "मोहनगंज कलां")
 
-        ds_hi = _decode((self.dev_input / "discharge/arogya_ds_ADM000170.txt").read_bytes())
+        ds_hi = self._read_decoded("discharge/arogya_ds_ADM000170.txt")
         drec = extract_identity("discharge/arogya_ds_ADM000170.txt", "doc", {}, ds_hi)
         self.assertIn("मनोज यादव", drec.names)
         self.assertIn(("Father", "रमेश यादव"), drec.relatives)
         self.assertIn("8921678541", drec.phones)
         self.assertEqual(drec.pin, "261699")
 
-        proto = _decode((self.dev_input / "clean/dengue_management_protocol.txt").read_bytes())
+        proto = self._read_decoded("clean/dengue_management_protocol.txt")
         prec = extract_identity("clean/dengue_management_protocol.txt", "doc", {}, proto)
         self.assertEqual(prec.names, [])
         self.assertEqual(prec.relatives, [])
         self.assertEqual(prec.phones, [])
 
-        wa = _decode((self.dev_input / "lab/whatsapp_forward_0003.txt").read_bytes())
+        wa = self._read_decoded("lab/whatsapp_forward_0003.txt")
         wrec = extract_identity("lab/whatsapp_forward_0003.txt", "doc", {}, wa)
         self.assertIn("Asha ji", wrec.names)
         self.assertEqual(wrec.age, 48)

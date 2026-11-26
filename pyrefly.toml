@@ -1,0 +1,3 @@
+project-includes = ["**/*.py"]
+project-excludes = ["my_output*/**", ".ref/**"]
+search-path = [".", "starter"]
