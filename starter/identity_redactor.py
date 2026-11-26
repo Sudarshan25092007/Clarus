@@ -24,9 +24,9 @@ _SHIELD_PATTERNS = [
     re.compile(r"\b(?:K/C/O|k/c/o)\s+[^,\n;.]+", re.IGNORECASE),
     re.compile(r"\b(?:H/O|h/o)\s+[^,\n;.]+", re.IGNORECASE),
     # Clinical complaints: C/O <symptom> (distinguished from C/O relative in addresses)
-    re.compile(r"\bC/[Oo]\s+(?:fever|pain|cough|headache|vomiting|loose|chest|weakness|breathlessness|giddiness|swelling|burning|itching|rash|cold|diarrhoea|constipation|seizure|blurring|bleeding)\b[^\n,;]*", re.IGNORECASE),
+    re.compile(r"\bC/[Oo]\s+(?:fever|pain|cough|headache|vomiting|loose stools?|chest pain|weakness|breathlessness|giddiness|swelling|burning|itching|rash|cold|diarrhoea|constipation|seizure|blurring|bleeding)\b(?:\s*x\s*\d+\s*(?:days?|weeks?|months?|yrs?|years?))?", re.IGNORECASE),
     re.compile(r"\b(?:fever|pain|cough|headache|vomiting|loose stools?)\s+x\s+\d+\s+days?\b", re.IGNORECASE),
-    re.compile(r"\b\d+\s+(?:दिन|din)\s+से\s+[^\n,;]+", re.IGNORECASE),
+    re.compile(r"\b\d+\s+(?:दिन|din)\s+से\s+[^\n,;.]+", re.IGNORECASE),
     # Dosages, strengths, units: 650 mg, 1 g, 10 units, 40 mg, etc.
     re.compile(r"\b\d+(?:\.\d+)?\s*(?:mg|g|mcg|kg|units?|sachets?|puffs?|mL|dL|mmol/L|g/dL|mg/dL|/uL|%)\b", re.IGNORECASE),
     # Frequencies: 1-0-1, 1-1-1, 1-0-0, 0-0-1, IV
@@ -37,9 +37,6 @@ _SHIELD_PATTERNS = [
     re.compile(r"\b(?:BP|pulse|temp(?:_f)?|spo2|RBS|HbA1c|WBC|Platelet|Sodium|Creatinine|TSH|Haemoglobin)\s*[:=]?\s*\d+(?:[./]\d+)?(?:\s*[A-Za-z/%]+)?\b", re.IGNORECASE),
     # Hospital wards and beds
     re.compile(r"\b(?:Ward\s+\d+(?:\s*\([^\)]*\))?|Bed\s+\d+)\b", re.IGNORECASE),
-    # Structured medical sections in discharge/clinical notes
-    re.compile(r"\b(?:Diagnosis|Chief Complaints?|Complaints?|Rx|Prescription|Treatment|Provisional Diagnosis|Final Diagnosis|Procedure|Surgery)\s*:\s*[^\n]+", re.IGNORECASE),
-    re.compile(r"\b(?:रोग|निदान|बीमारी|जांच|उपचार|दवा|परामर्श|सर्जरी|प्रक्रिया)\s*:\s*[^\n]+"),
     # Districts (clinical geographical context)
     re.compile(r"\b(?:Lucknow|Barabanki|Sitapur|Hardoi|Rae Bareli|Bahraich|Sultanpur|Unnao|बहराइच|बाराबंकी|रायबरेली)\b", re.IGNORECASE),
     # Context traps & procedures
@@ -69,7 +66,7 @@ def shield_text(text: str) -> tuple[str, dict[str, str]]:
     return shielded, shields
 
 
-def restore_text(text: str, shields: dict[str, str]) -> str:
+def restore_text(text: str, shields: dict[str, str], gazetteer: dict[str, Any] | None = None) -> str:
     """Restore __SHIELD_i__ tokens back to original clinical text, unpacking nested shields."""
     while "__SHIELD_" in text:
         changed = False
@@ -104,11 +101,11 @@ _RE_PIN = re.compile(r"\b(?:PIN[:\s-]*|Pin[:\s-]*)?(\d{6})\b", re.IGNORECASE)
 
 # Generic label-anchored patterns
 _RE_TIME_LOG_NAME = re.compile(
-    r"^(\d{1,2}:\d{2}\s*-\s*)([A-Za-z\u0900-\u097F.\s]+?)(?=\s*\((?:attendant|visitor|relative|bed)|\s*,\s*mob|\s*-\s*|$)",
-    re.MULTILINE,
+    r"^(\d{1,2}:\d{2}\s*-\s*)([A-Za-z\u0900-\u097F.\s]+?)(?=\s*(?:\([^\)]*\)|,\s*(?:mob|mobile|phone|tel|\d|\+)|-\s*K/C/O|-|$))",
+    re.MULTILINE | re.IGNORECASE,
 )
 _RE_ATTENDANT_CALLER_WITNESS = re.compile(
-    r"\b(?:called by|witnessed by|referred by patient's?)\s+([A-Za-z\u0900-\u097F.\s]+?)(?=\s*(?:\[PHONE\]|\d|\+?91|mob|phone|,|\n|\.|\(|$))",
+    r"\b(?:called by|witnessed by|referred by patient's?|accompanied by|brought by)\s+([A-Za-z\u0900-\u097F.\s]+?)(?=\s*(?:\[PHONE\]|\d|\+?91|mob|phone|,|\n|\.|\(|$))",
     re.IGNORECASE,
 )
 _RE_ATTENDANT_LABEL = re.compile(
@@ -297,19 +294,23 @@ def redact_text(text: str, gazetteer: dict[str, Any] | None = None) -> str:
             if len(mrn) >= 5 and mrn in shielded:
                 shielded = re.sub(r"\b" + re.escape(mrn) + r"\b", "[MRN]", shielded, flags=re.IGNORECASE)
 
-        # Multi-token patient names (globally matched)
+        # Multi-token and guarded single-token patient names
         for name in gazetteer.get("patient_names", []):
             tokens = name.split()
-            if len(tokens) >= 2 and len(name) >= 5:
+            if len(tokens) >= 2 and len(name) >= 4:
                 if name in shielded or name.lower() in shielded.lower():
-                    shielded = re.sub(r"\b" + re.escape(name) + r"\b", "[PATIENT_NAME]", shielded, flags=re.IGNORECASE)
+                    shielded = re.sub(r"(?<![A-Za-z0-9\u0900-\u097F])" + re.escape(name) + r"(?![A-Za-z0-9\u0900-\u097F])", "[PATIENT_NAME]", shielded, flags=re.IGNORECASE)
+            elif len(tokens) == 1 and len(name) >= 4:
+                if name.lower() not in ("asha", "ward", "pill", "diet", "mode", "care", "left", "right", "ramesh"):
+                    if name in shielded or name.lower() in shielded.lower():
+                        shielded = re.sub(r"(?<![A-Za-z0-9\u0900-\u097F])" + re.escape(name) + r"(?![A-Za-z0-9\u0900-\u097F])", "[PATIENT_NAME]", shielded, flags=re.IGNORECASE)
 
-        # Relative names (globally matched)
+        # Relative names (globally matched with unicode boundary)
         for rname in gazetteer.get("relative_names", []):
             tokens = rname.split()
-            if len(tokens) >= 2 and len(rname) >= 5:
+            if len(tokens) >= 2 and len(rname) >= 4:
                 if rname in shielded or rname.lower() in shielded.lower():
-                    shielded = re.sub(r"\b" + re.escape(rname) + r"\b", "[RELATIVE_NAME]", shielded, flags=re.IGNORECASE)
+                    shielded = re.sub(r"(?<![A-Za-z0-9\u0900-\u097F])" + re.escape(rname) + r"(?![A-Za-z0-9\u0900-\u097F])", "[RELATIVE_NAME]", shielded, flags=re.IGNORECASE)
 
         # Villages
         for v in gazetteer.get("villages", []):
@@ -317,7 +318,7 @@ def redact_text(text: str, gazetteer: dict[str, Any] | None = None) -> str:
                 shielded = re.sub(r"\b" + re.escape(v) + r"\b", "[VILLAGE]", shielded, flags=re.IGNORECASE)
 
     # Step 3: Restore clinical preserve shields
-    restored = restore_text(shielded, shields)
+    restored = restore_text(shielded, shields, gazetteer)
     return restored
 
 
@@ -325,16 +326,18 @@ def redact_text(text: str, gazetteer: dict[str, Any] | None = None) -> str:
 # 5. Base64 String Sanitizer
 # ---------------------------------------------------------------------------
 
-_B64_TOKEN = re.compile(r"^[A-Za-z0-9+/]{20,}={0,2}$")
+_B64_TOKEN = re.compile(r"^[A-Za-z0-9+/\-_]{20,}={0,2}$")
 
 
 def sanitize_base64_string(b64_str: str, gazetteer: dict[str, Any] | None = None) -> str:
-    """If string decodes to clean UTF-8 text, redact it and re-encode to base64."""
-    tok = b64_str.strip()
+    """If string decodes to clean UTF-8 text, redact it and re-encode to base64, supporting URL-safe and whitespace-padded b64."""
+    tok = "".join(b64_str.split())
     if len(tok) < 16:
         return b64_str
+    is_urlsafe = "-" in tok or "_" in tok
+    std_tok = tok.replace("-", "+").replace("_", "/")
     try:
-        raw = base64.b64decode(tok + "=" * (-len(tok) % 4))
+        raw = base64.b64decode(std_tok + "=" * (-len(std_tok) % 4))
         decoded = raw.decode("utf-8")
     except (binascii.Error, ValueError, UnicodeDecodeError):
         return b64_str
@@ -343,6 +346,8 @@ def sanitize_base64_string(b64_str: str, gazetteer: dict[str, Any] | None = None
         return b64_str
 
     cleaned = redact_text(decoded, gazetteer)
+    if is_urlsafe:
+        return base64.urlsafe_b64encode(cleaned.encode("utf-8")).decode("ascii")
     return base64.b64encode(cleaned.encode("utf-8")).decode("ascii")
 
 
@@ -358,7 +363,7 @@ _RE_FILENAME_PHONE = re.compile(r"(?<!\d)[6-9]\d{9}(?!\d)")
 
 
 def sanitize_filename(relpath: str, gazetteer: dict[str, Any] | None = None) -> str:
-    """Scrub PII from filename stem, append deterministic hash to prevent collisions."""
+    """Scrub PII from filename stem across all folders, append deterministic hash to prevent collisions."""
     p = Path(relpath)
     stem = p.stem
     ext = p.suffix
@@ -371,9 +376,18 @@ def sanitize_filename(relpath: str, gazetteer: dict[str, Any] | None = None) -> 
         has_pii = True
     elif gazetteer:
         for name in gazetteer.get("patient_names", []):
-            if len(name) >= 5 and (name in stem or name.replace(" ", "_") in stem):
+            if len(name) >= 3 and (name.lower() in stem.lower() or name.lower().replace(" ", "_") in stem.lower()):
                 has_pii = True
                 break
+            for tok in name.split():
+                if len(tok) >= 4 and tok.lower() in stem.lower():
+                    has_pii = True
+                    break
+        if not has_pii:
+            for rname in gazetteer.get("relative_names", []):
+                if len(rname) >= 3 and (rname.lower() in stem.lower() or rname.lower().replace(" ", "_") in stem.lower()):
+                    has_pii = True
+                    break
 
     if not has_pii:
         return relpath
@@ -385,13 +399,19 @@ def sanitize_filename(relpath: str, gazetteer: dict[str, Any] | None = None) -> 
 
     if gazetteer:
         for name in gazetteer.get("patient_names", []):
-            if len(name) >= 4:
+            if len(name) >= 3:
                 cleaned = re.sub(re.escape(name), "", cleaned, flags=re.IGNORECASE)
                 cleaned = re.sub(re.escape(name.replace(" ", "_")), "", cleaned, flags=re.IGNORECASE)
             for tok in name.split():
                 if len(tok) >= 4:
                     cleaned = re.sub(r"\b" + re.escape(tok) + r"\b", "", cleaned, flags=re.IGNORECASE)
                     cleaned = re.sub(r"(?<=_)" + re.escape(tok) + r"(?=_)", "", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"^" + re.escape(tok) + r"(?=_)", "", cleaned, flags=re.IGNORECASE)
+                    cleaned = re.sub(r"(?<=_)" + re.escape(tok) + r"$", "", cleaned, flags=re.IGNORECASE)
+        for rname in gazetteer.get("relative_names", []):
+            if len(rname) >= 3:
+                cleaned = re.sub(re.escape(rname), "", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(re.escape(rname.replace(" ", "_")), "", cleaned, flags=re.IGNORECASE)
 
     cleaned = re.sub(r"[_\s-]+", "_", cleaned).strip("_")
     if not cleaned or len(cleaned) <= 2:
@@ -431,17 +451,21 @@ def clean_json_value(data: Any, gazetteer: dict[str, Any] | None = None, pid: st
                 cleaned_dict[k] = clean_json_value(meta_copy, gazetteer, pid)
                 continue
 
-            # Key sanitization for patient_index.json (keys are UHIDs or names)
+            # Key sanitization across all JSON files (keys can be names, relatives, or MRNs)
             clean_k = k
             if norm_k not in _PII_KEYS:
                 if gazetteer:
                     for mrn in gazetteer.get("mrns", []):
-                        if mrn == k or mrn in k:
+                        if mrn.lower() in str(k).lower():
                             clean_k = "[MRN]"
                             break
                     for name in gazetteer.get("patient_names", []):
-                        if len(name) >= 4 and (name == k or name in k):
+                        if len(name) >= 3 and name.lower() in str(k).lower():
                             clean_k = "[PATIENT_NAME]"
+                            break
+                    for rname in gazetteer.get("relative_names", []):
+                        if len(rname) >= 3 and rname.lower() in str(k).lower():
+                            clean_k = "[RELATIVE_NAME]"
                             break
 
             # Value sanitization based on key type
@@ -482,8 +506,11 @@ def clean_json_value(data: Any, gazetteer: dict[str, Any] | None = None, pid: st
         return [clean_json_value(x, gazetteer, pid) for x in data]
 
     if isinstance(data, str):
-        if len(data) >= 20 and _B64_TOKEN.match(data.strip()):
-            return sanitize_base64_string(data, gazetteer)
+        tok = "".join(data.split())
+        if len(tok) >= 16 and _B64_TOKEN.match(tok):
+            san_b64 = sanitize_base64_string(data, gazetteer)
+            if san_b64 != data:
+                return san_b64
         return redact_text(data, gazetteer)
 
     return data
