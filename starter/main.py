@@ -46,6 +46,11 @@ def load_policy(path: Path) -> dict:
 
 
 HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+from identity_pipeline import build_pseudonym_map
+
 POLICY = load_policy(HERE / "config" / "policy.yaml")
 SECRET = os.environ.get("RAKSHA_SECRET", "").encode()  # never print or write this
 
@@ -156,7 +161,7 @@ def decode(raw: bytes) -> str | None:
     return None
 
 
-def process_csv(text: str, delimiter: str, rel: str, records: list) -> str:
+def process_csv(text: str, delimiter: str, rel: str, records: list, psn_map: dict | None = None) -> str:
     rows = list(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter))
     if not rows:
         return ""
@@ -165,37 +170,46 @@ def process_csv(text: str, delimiter: str, rel: str, records: list) -> str:
     w = csv.writer(buf, delimiter=delimiter, lineterminator="\n")
     w.writerow(header)  # TODO(team): rename a header only if it contains PII
     for i, row in enumerate(body):
-        key = link_records(delimiter.join(row))
-        pid = pseudonym(key) if key else None
+        loc = f"row:{i}"
+        pid = psn_map.get((rel, loc)) if psn_map else None
         # TODO(team): write pid into the row's patient column so it appears INSIDE the record
         w.writerow([clean_text(c) for c in row])
-        records.append({"file": f"sanitized/{rel}", "loc": f"row:{i}", "patient": pid})
+        records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
         Stats.records += 1
         Stats.linked += pid is not None
     return buf.getvalue()
 
 
-def process_json(text: str, rel: str, records: list) -> str:
+def process_json(text: str, rel: str, records: list, psn_map: dict | None = None) -> str:
     data = json.loads(text)
     is_doc = not isinstance(data, dict) or data.get("resourceType") == "Bundle" or not any(
         isinstance(v, list) and v and all(isinstance(x, dict) for x in v) for v in data.values())
     if is_doc:  # FHIR Bundle or single object: one record for the whole file
-        records.append({"file": f"sanitized/{rel}", "loc": "doc", "patient": None})
+        loc = "doc"
+        pid = psn_map.get((rel, loc)) if psn_map else None
+        records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
         Stats.records += 1
+        Stats.linked += pid is not None
     else:
         for k, v in data.items():
             if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
                 for i, _ in enumerate(v):
                     pointer_key = k.replace("~", "~0").replace("/", "~1")
-                    records.append({"file": f"sanitized/{rel}", "loc": f"/{pointer_key}/{i}", "patient": None})
+                    loc = f"/{pointer_key}/{i}"
+                    pid = psn_map.get((rel, loc)) if psn_map else None
+                    records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
                     Stats.records += 1
+                    Stats.linked += pid is not None
     # TODO(team): FHIR must stay a valid R4 Bundle whose references resolve
     return json.dumps(clean_value(data), ensure_ascii=False, indent=2) + "\n"
 
 
-def process_text(text: str, rel: str, records: list) -> str:
-    records.append({"file": f"sanitized/{rel}", "loc": "doc", "patient": None})
+def process_text(text: str, rel: str, records: list, psn_map: dict | None = None) -> str:
+    loc = "doc"
+    pid = psn_map.get((rel, loc)) if psn_map else None
+    records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
     Stats.records += 1
+    Stats.linked += pid is not None
     return clean_text(text)
 
 
@@ -220,6 +234,12 @@ def main() -> int:
     files, records = [], []
     sys.setrecursionlimit(5000)
 
+    secret_key = os.environ.get("RAKSHA_SECRET", "").encode("utf-8")
+    if not secret_key:
+        raise ValueError("RAKSHA_SECRET environment variable is missing or empty")
+
+    psn_map = build_pseudonym_map(inp, secret_key)
+
     for path in sorted(p for p in inp.rglob("*") if p.is_file()):
         rel = path.relative_to(inp).as_posix()
         raw = path.read_bytes()
@@ -235,11 +255,11 @@ def main() -> int:
                 raise ValueError("undecodable_text")
             # TODO(team): a file NAME can contain PII: rename it and report the new path
             if ext in (".csv", ".tsv"):
-                result = process_csv(text, "\t" if ext == ".tsv" else ",", rel, records)
+                result = process_csv(text, "\t" if ext == ".tsv" else ",", rel, records, psn_map)
             elif ext == ".json":
-                result = process_json(text, rel, records)
+                result = process_json(text, rel, records, psn_map)
             else:
-                result = process_text(text, rel, records)
+                result = process_text(text, rel, records, psn_map)
             dest = san / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(result, encoding="utf-8", newline="")
