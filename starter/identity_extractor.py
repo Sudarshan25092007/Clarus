@@ -272,7 +272,11 @@ _RELATION_MAP = {
 }
 
 _RELATION_PREFIX_RE = re.compile(
-    r"^(?i:(?:s/o|d/o|w/o|h/o|c/o|son\s+of|daughter\s+of|wife\s+of|husband\s+of|care\s+of)\b|(?:पिता|पति|पत्नी|माता|बेटा|बेटी))[\s:.-]*"
+    r"^(?:"
+    r"(?i:(?:s/o|d/o|w/o|h/o|c/o|son\s+of|daughter\s+of|wife\s+of|husband\s+of|care\s+of)\b)"
+    r"|"
+    r"(?:पिता|पत्नी|माता|बेटा|बेटी|पति|पुत्र|पुत्री)(?=[\s:.\-,]|$)"
+    r")[\s:.\-]*"
 )
 
 
