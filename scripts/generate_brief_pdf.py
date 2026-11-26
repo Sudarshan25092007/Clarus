@@ -34,21 +34,21 @@ class NumberedCanvas(canvas.Canvas):
         self.saveState()
         self.setFont("Helvetica-Bold", 7.5)
         self.setFillColor(colors.HexColor("#1A365D"))  # Navy
-        self.drawString(36, 810, "TEAM CLARUS · SECRET WARDS (TRACK 3)")
+        self.drawString(36, 812, "TEAM CLARUS · SECRET WARDS (TRACK 3)")
         self.setFont("Helvetica", 7.5)
-        self.setFillColor(colors.HexColor("#4A5568"))
-        self.drawRightString(559, 810, "OFFLINE PRIVACY FIREWALL & IDENTITY RESOLUTION ENGINE")
-        
+        self.setFillColor(colors.HexColor("#2D3748"))
+        self.drawRightString(559, 812, "OFFLINE PRIVACY FIREWALL & IDENTITY RESOLUTION ENGINE")
+
         self.setStrokeColor(colors.HexColor("#CBD5E0"))
         self.setLineWidth(0.6)
-        self.line(36, 804, 559, 804)
-        
-        self.line(36, 30, 559, 30)
+        self.line(36, 806, 559, 806)
+
+        self.line(36, 28, 559, 28)
         self.setFont("Helvetica", 7.5)
-        self.setFillColor(colors.HexColor("#718096"))
-        self.drawString(36, 20, "YUGAANTAR DEVFORGE 2026 · EVALUATION BRIEF · STRICTLY 2 PAGES")
+        self.setFillColor(colors.HexColor("#4A5568"))
+        self.drawString(36, 18, "YUGAANTAR DEVFORGE 2026 · EVALUATION BRIEF · STRICTLY 2 PAGES")
         page_str = f"Page {self._pageNumber} of {page_count}"
-        self.drawRightString(559, 20, page_str)
+        self.drawRightString(559, 18, page_str)
         self.restoreState()
 
 
@@ -59,8 +59,8 @@ def build_pdf():
         pagesize=A4,
         leftMargin=36,
         rightMargin=36,
-        topMargin=44,
-        bottomMargin=38,
+        topMargin=40,
+        bottomMargin=34,
     )
 
     styles = getSampleStyleSheet()
@@ -69,44 +69,52 @@ def build_pdf():
         "DocTitle",
         parent=styles["Normal"],
         fontName="Helvetica-Bold",
-        fontSize=12,
-        leading=15,
+        fontSize=11.5,
+        leading=14.5,
         textColor=colors.HexColor("#1A365D"),
     )
     subtitle_style = ParagraphStyle(
         "DocSubTitle",
         parent=styles["Normal"],
         fontName="Helvetica",
-        fontSize=7.8,
-        leading=10.5,
+        fontSize=7.6,
+        leading=10.0,
         textColor=colors.HexColor("#2B6CB0"),
     )
     h1_style = ParagraphStyle(
         "SectionH1",
         parent=styles["Normal"],
         fontName="Helvetica-Bold",
-        fontSize=9,
-        leading=11.5,
+        fontSize=8.8,
+        leading=11.2,
         textColor=colors.HexColor("#1A365D"),
         spaceBefore=3,
-        spaceAfter=2,
+        spaceAfter=1.5,
     )
     body_style = ParagraphStyle(
         "BodyTextCustom",
         parent=styles["Normal"],
         fontName="Helvetica",
-        fontSize=7.3,
-        leading=9.4,
-        textColor=colors.HexColor("#2D3748"),
+        fontSize=7.8,
+        leading=10.0,
+        textColor=colors.HexColor("#1A202C"),
+    )
+    table_cell_style = ParagraphStyle(
+        "TableCell",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=7.1,
+        leading=8.8,
+        textColor=colors.HexColor("#1A202C"),
     )
 
     story = []
 
     # Title & Metadata
     story.append(Paragraph("<b>CLARUS: Deterministic Multi-Script Identity Resolution & Zero-Leakage Privacy Firewall</b>", title_style))
-    story.append(Spacer(1, 2))
-    story.append(Paragraph("<b>Track 3: Secret Wards</b> · Team Clarus · Repository: <font color='#2B6CB0'><u>github.com/Sudarshan25092007/Clarus</u></font>", subtitle_style))
-    story.append(Spacer(1, 3))
+    story.append(Spacer(1, 1.5))
+    story.append(Paragraph("<b>Track 3: Secret Wards</b> · <b>Team:</b> Sudarshan Patil H J (Backend & Linkage), Mohith (Privacy Firewall & Redaction), Evaluation Engineer (Testing) · Repo: <font color='#2B6CB0'><u>github.com/Sudarshan25092007/Clarus</u></font>", subtitle_style))
+    story.append(Spacer(1, 2.5))
 
     # One-line Pitch / Abstract Box
     abstract_text = (
@@ -119,13 +127,13 @@ def build_pdf():
     abstract_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#EBF8FF")),
         ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#3182CE")),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
         ("LEFTPADDING", (0, 0), (-1, -1), 5),
         ("RIGHTPADDING", (0, 0), (-1, -1), 5),
     ]))
     story.append(abstract_table)
-    story.append(Spacer(1, 4))
+    story.append(Spacer(1, 3))
 
     # SECTION 1
     story.append(Paragraph("1. System Architecture & Resource Compliance", h1_style))
@@ -136,20 +144,19 @@ def build_pdf():
         "<br/>• <b>Execution Limits:</b> Zero hosted or pip LLM dependencies (standard library + PyYAML only). Full end-to-end execution completes in <b>4.4s</b> with peak RAM of <b>28.4 MB</b> (well within 15 min / 4 GB / 2 CPU event constraints). Network calls are strictly disabled (<code>HF_HUB_OFFLINE=1</code>)."
     )
     story.append(Paragraph(sec1_text, body_style))
-    story.append(Spacer(1, 4))
+    story.append(Spacer(1, 3))
 
     # SECTION 2
     story.append(Paragraph("2. Identity Linkage Engine: Orthogonal Blocking & Constrained Clustering", h1_style))
     sec2_text = (
         "Cross-hospital linkage in Secret Wards presents severe challenges: transliteration divergence (e.g. <i>Sneha</i> vs <i>नेहा</i>), shared family phones, and distinct hospital UHID namespaces. Clarus solves this with a 4-tier linkage hierarchy:"
-        "<br/>• <b>Orthogonal 3-Key Blocking:</b> Reduces candidate pairwise comparisons by <b>99.1%</b> (from 2,145 naive pairs to 22 candidates on 66 registrations) while maintaining <b>100% true candidate recall</b>. Blocks on: (1) Exact 10-digit normalized phone, (2) Normalized 3-character name prefix + gender, and (3) Hospital-scoped UHID string."
+        "<br/>• <b>Orthogonal 3-Key Blocking:</b> Reduces candidate pairwise comparisons by <b>99.0%</b> (from 2,145 naive registration pairs to 22 candidates on 66 registrations: 98.97% reduction) while maintaining <b>100% true candidate recall</b>. Blocks on: (1) Exact 10-digit normalized phone, (2) Normalized name + gender, and (3) Relative name + relation + gender. <i>(Safety Invariant: Never blocks on UHID alone, as UHIDs are hospital-scoped rather than globally unique).</i>"
         "<br/>• <b>Strict None-Safe Feature Extractor:</b> Pairwise comparison computes exact phone equality, Devanagari-Latin transliteration Jaro-Winkler similarity, age delta (|Δage| ≤ 2), relative name concordance (e.g. father/husband alignment), and gender compatibility."
         "<br/>• <b>Deterministic Decision Tiers with Household Guards:</b> Hard negative rejections enforce strict contradiction boundaries (gender mismatch, age difference > 15 years). A dedicated <b>shared-phone household guard</b> prevents merging family members who share a mobile number unless first names or relative cues corroborate identity."
         "<br/>• <b>Score-Ordered Constrained Union-Find:</b> Clusters candidate edges sorted by descending decision confidence. Enforces lazy anti-transitivity verification before joining disjoint sets: if patient A matches B and B matches C, but A and C possess a hard negative contradiction, the merge is vetoed. Produces <b>0 false merges</b> across all 4 hospital datasets."
         "<br/>• <b>HMAC-SHA256 Pseudonymization:</b> Deterministically maps each canonical patient cluster to Crockford Base32 pseudonyms (<code>PSN-XXXXXX</code>) keyed with <code>RAKSHA_SECRET</code>, guaranteeing irreversible, stable cross-file pseudonym linkage."
     )
     story.append(Paragraph(sec2_text, body_style))
-    story.append(Spacer(1, 4))
 
     # PAGE BREAK TO PAGE 2
     story.append(PageBreak())
@@ -166,7 +173,7 @@ def build_pdf():
         "<br/>&nbsp;&nbsp;– <i>JSON Keys & Base64:</i> Recursively scrubs PII from dictionary keys (e.g. patient index dictionaries) and decodes/sanitizes/re-encodes both standard and URL-safe base64 attachment payloads."
     )
     story.append(Paragraph(sec3_text, body_style))
-    story.append(Spacer(1, 4))
+    story.append(Spacer(1, 2.5))
 
     # SECTION 4
     story.append(Paragraph("4. Empirical Verification & Adversarial Robustness", h1_style))
@@ -178,16 +185,16 @@ def build_pdf():
 
     # Scorecard Table
     table_data = [
-        [Paragraph("<b>Evaluation Dimension</b>", body_style), Paragraph("<b>Initial Starter</b>", body_style), Paragraph("<b>Hardened Result</b>", body_style), Paragraph("<b>Official Target</b>", body_style), Paragraph("<b>Evaluation Status</b>", body_style)],
-        [Paragraph("Personal Data Leaked", body_style), Paragraph("2,718 / 3,230 (84.1%)", body_style), Paragraph("<b>0 / 3,230 (0.0%)</b>", body_style), Paragraph("< 10.0%", body_style), Paragraph("<b>PERFECT (0 leaks)</b>", body_style)],
-        [Paragraph("Planted Canaries Leaked", body_style), Paragraph("4 / 4 (-12 pts)", body_style), Paragraph("<b>0 / 4 (0.0%)</b>", body_style), Paragraph("0 (Disqualification risk)", body_style), Paragraph("<b>CLEAN (0 found)</b>", body_style)],
-        [Paragraph("Medical Data Preserved", body_style), Paragraph("4,855 / 4,855 (100.0%)", body_style), Paragraph("<b>4,855 / 4,855 (100.0%)</b>", body_style), Paragraph("100.0%", body_style), Paragraph("<b>PERFECT (100.0%)</b>", body_style)],
-        [Paragraph("Patient Linkage Precision", body_style), Paragraph("0.00", body_style), Paragraph("<b>1.00 (0 false merges)</b>", body_style), Paragraph("1.00", body_style), Paragraph("<b>PERFECT (1.00)</b>", body_style)],
-        [Paragraph("Patient Linkage Recall", body_style), Paragraph("0.00", body_style), Paragraph("<b>1.00 (all true pairs)</b>", body_style), Paragraph("High", body_style), Paragraph("<b>OPTIMAL (1.00)</b>", body_style)],
-        [Paragraph("Patient Linkage F0.5", body_style), Paragraph("0.00", body_style), Paragraph("<b>1.00</b>", body_style), Paragraph("High", body_style), Paragraph("<b>OPTIMAL (1.00)</b>", body_style)],
-        [Paragraph("Raw Unsupported Copies", body_style), Paragraph("0 (-0 pts)", body_style), Paragraph("<b>0 (-0 pts)</b>", body_style), Paragraph("0 (-5 pts each)", body_style), Paragraph("<b>CLEAN (0 raw)</b>", body_style)],
-        [Paragraph("Output Contract Compliance", body_style), Paragraph("OK", body_style), Paragraph("<b>CONTRACT OK</b>", body_style), Paragraph("Required", body_style), Paragraph("<b>VERIFIED OK</b>", body_style)],
-        [Paragraph("Runtime & Peak Memory", body_style), Paragraph("~1.2s / 24 MB", body_style), Paragraph("<b>4.4s / 28.4 MB</b>", body_style), Paragraph("< 900s / < 4,096 MB", body_style), Paragraph("<b>0.5% limit used</b>", body_style)],
+        [Paragraph("<b>Evaluation Dimension</b>", table_cell_style), Paragraph("<b>Initial Starter</b>", table_cell_style), Paragraph("<b>Hardened Result</b>", table_cell_style), Paragraph("<b>Self-Check Benchmark</b>", table_cell_style), Paragraph("<b>Evaluation Status</b>", table_cell_style)],
+        [Paragraph("Personal Data Leaked", table_cell_style), Paragraph("2,718 / 3,230 (84.1%)", table_cell_style), Paragraph("<b>0 / 3,230 (0.0%)</b>", table_cell_style), Paragraph("< 10.0%", table_cell_style), Paragraph("<b>PERFECT (0 leaks)</b>", table_cell_style)],
+        [Paragraph("Planted Canaries Leaked", table_cell_style), Paragraph("4 / 4 (-12 pts)", table_cell_style), Paragraph("<b>0 / 4 (0.0%)</b>", table_cell_style), Paragraph("0 (Disqualification risk)", table_cell_style), Paragraph("<b>CLEAN (0 found)</b>", table_cell_style)],
+        [Paragraph("Medical Data Preserved", table_cell_style), Paragraph("4,855 / 4,855 (100.0%)", table_cell_style), Paragraph("<b>4,855 / 4,855 (100.0%)</b>", table_cell_style), Paragraph("100.0%", table_cell_style), Paragraph("<b>PERFECT (100.0%)</b>", table_cell_style)],
+        [Paragraph("Patient Linkage Precision", table_cell_style), Paragraph("0.00", table_cell_style), Paragraph("<b>1.00 (0 false merges)</b>", table_cell_style), Paragraph("1.00", table_cell_style), Paragraph("<b>PERFECT (1.00)</b>", table_cell_style)],
+        [Paragraph("Patient Linkage Recall", table_cell_style), Paragraph("0.00", table_cell_style), Paragraph("<b>1.00 (all true pairs)</b>", table_cell_style), Paragraph("High", table_cell_style), Paragraph("<b>OPTIMAL (1.00)</b>", table_cell_style)],
+        [Paragraph("Patient Linkage F0.5", table_cell_style), Paragraph("0.00", table_cell_style), Paragraph("<b>1.00</b>", table_cell_style), Paragraph("High", table_cell_style), Paragraph("<b>OPTIMAL (1.00)</b>", table_cell_style)],
+        [Paragraph("Raw Unsupported Copies", table_cell_style), Paragraph("0 (-0 pts)", table_cell_style), Paragraph("<b>0 (-0 pts)</b>", table_cell_style), Paragraph("0 (-5 pts each)", table_cell_style), Paragraph("<b>CLEAN (0 raw)</b>", table_cell_style)],
+        [Paragraph("Output Contract Compliance", table_cell_style), Paragraph("OK", table_cell_style), Paragraph("<b>CONTRACT OK</b>", table_cell_style), Paragraph("Required", table_cell_style), Paragraph("<b>VERIFIED OK</b>", table_cell_style)],
+        [Paragraph("Runtime & Peak Memory", table_cell_style), Paragraph("~1.2s / 24 MB", table_cell_style), Paragraph("<b>4.4s / 28.4 MB</b>", table_cell_style), Paragraph("< 900s / < 4,096 MB", table_cell_style), Paragraph("<b>0.5% limit used</b>", table_cell_style)],
     ]
     score_table = Table(table_data, colWidths=[125, 95, 105, 95, 103])
     score_table.setStyle(TableStyle([
@@ -202,19 +209,19 @@ def build_pdf():
         ("RIGHTPADDING", (0, 0), (-1, -1), 3),
     ]))
     story.append(score_table)
-    story.append(Spacer(1, 3))
+    story.append(Spacer(1, 2.5))
 
     # Adversarial Testing & Security
     sec5_text = (
         "• <b>Adversarial Hidden-Split Test Suite (<code>tests/test_adversarial_hidden.py</code>):</b> 23 dedicated unit tests validate system robustness against unseen evaluation distributions, including canary injection into diagnosis and treatment sections, whitespace-padded and URL-safe base64 payloads, names in non-standard filename formats, and single-token boundary corner cases. Total repo tests: <b>50 / 50 passing</b> in 10.9s."
-        "<br/>• <b>Security, Key Handling & Safe Quarantine:</b> <code>RAKSHA_SECRET</code> resides strictly in volatile memory, never written to disk, output files, or logs. Malicious, corrupted, or structurally hostile files (e.g. recursive depth bombs, corrupted byte sequences, mislabeled format headers) are quarantined with clean non-revealing reason codes (<code>mislabeled_format</code>, <code>corrupt_bytes</code>, <code>excessive_depth</code>)."
+        "<br/>• <b>Security & Safe Quarantine:</b> <code>RAKSHA_SECRET</code> resides strictly in volatile memory, never written to disk, output files, or logs. Malicious, corrupted, or structurally hostile files (e.g. recursive depth bombs, corrupted byte sequences, mislabeled format headers) are quarantined with clean non-revealing reason codes (<code>mislabeled_format</code>, <code>corrupt_bytes</code>, <code>excessive_depth</code>)."
     )
     story.append(Paragraph(sec5_text, body_style))
-    story.append(Spacer(1, 3))
+    story.append(Spacer(1, 2.5))
 
     # Known Limitations & Roadmap
     sec6_text = (
-        "• <b>Known Limitations & Future Roadmap:</b> (1) Extreme phonetic transliteration noise without phone/UHID overlaps relies on conservative thresholds to protect against false merges; future iterations could incorporate edit-distance weighted Devanagari consonant clusters. (2) Date shifting currently enforces uniform intra-patient delta offsets; extending to differential jitter for non-clinical milestones would provide additional privacy margin."
+        "• <b>Known Limitations & Roadmap:</b> (1) Extreme phonetic transliteration noise without phone/UHID overlaps relies on conservative thresholds to protect against false merges; future iterations could incorporate edit-distance weighted Devanagari consonant clusters. (2) Date shifting currently enforces uniform intra-patient delta offsets; extending to differential jitter for non-clinical milestones would provide additional privacy margin. (3) Rare-group k-anonymity suppression (<code>min_group_size: 5</code> in <code>policy.yaml</code>) is a documented policy target currently marked TODO; formal k-anonymity resistance is designated for Phase 2."
     )
     story.append(Paragraph(sec6_text, body_style))
 

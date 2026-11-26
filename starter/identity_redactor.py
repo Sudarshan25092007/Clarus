@@ -222,6 +222,25 @@ def build_pii_gazetteer(records: list[Any]) -> dict[str, Any]:
 # 4. Core Text Redaction with Mask-and-Restore
 # ---------------------------------------------------------------------------
 
+_DETECTIONS_COUNT = 0
+
+
+def get_detections_count() -> int:
+    """Return total count of PII detection/redaction events."""
+    return _DETECTIONS_COUNT
+
+
+def reset_detections_count() -> None:
+    """Reset detection counter to zero."""
+    global _DETECTIONS_COUNT
+    _DETECTIONS_COUNT = 0
+
+
+def _inc_detections(n: int = 1) -> None:
+    global _DETECTIONS_COUNT
+    _DETECTIONS_COUNT += n
+
+
 def redact_text(text: str, gazetteer: dict[str, Any] | None = None) -> str:
     """Mask clinical preserves, apply generic regexes and gazetteer, then restore shields."""
     if not text:
@@ -231,91 +250,122 @@ def redact_text(text: str, gazetteer: dict[str, Any] | None = None) -> str:
     shielded, shields = shield_text(text)
 
     # Step 2: Redact generic identifiers on shielded text
-    shielded = _RE_PHONE.sub("[PHONE]", shielded)
-    shielded = _RE_AADHAAR.sub("[AADHAAR]", shielded)
-    shielded = _RE_AADHAAR_MASKED.sub("[AADHAAR]", shielded)
-    shielded = _RE_PAN.sub("[PAN]", shielded)
-    shielded = _RE_ABHA.sub("[ABHA_NUMBER]", shielded)
-    shielded = _RE_EMAIL.sub("[EMAIL]", shielded)
-    shielded = _RE_MRN_PATTERNS.sub("[MRN]", shielded)
+    shielded, n = _RE_PHONE.subn("[PHONE]", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_AADHAAR.subn("[AADHAAR]", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_AADHAAR_MASKED.subn("[AADHAAR]", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_PAN.subn("[PAN]", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_ABHA.subn("[ABHA_NUMBER]", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_EMAIL.subn("[EMAIL]", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_MRN_PATTERNS.subn("[MRN]", shielded)
+    _inc_detections(n)
 
     # Address components
-    shielded = _RE_HOUSE.sub("[HOUSE]", shielded)
-    shielded = _RE_LOCALITY.sub("[LOCALITY]", shielded)
-    shielded = _RE_LANDMARK.sub("[LANDMARK]", shielded)
+    shielded, n = _RE_HOUSE.subn("[HOUSE]", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_LOCALITY.subn("[LOCALITY]", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_LANDMARK.subn("[LANDMARK]", shielded)
+    _inc_detections(n)
 
     # Visitor log / nursing log entries: HH:MM - Name (attendant/visitor/...)
-    shielded = _RE_TIME_LOG_NAME.sub(r"\g<1>[NAME]", shielded)
-    shielded = _RE_ATTENDANT_CALLER_WITNESS.sub(r"called by [CALLER_NAME]", shielded)
-    shielded = _RE_ATTENDANT_LABEL.sub(lambda m: m.group(0).split(":")[0] + ": [RELATIVE_NAME]", shielded)
-    shielded = _RE_LAB_RECEIVED_FROM.sub(r"Sample received from [PATIENT_NAME]'s attendant", shielded)
-    shielded = _RE_DISCHARGE_NOTE_HEADER.sub(r"[PATIENT_NAME], \2", shielded)
-    shielded = _RE_RELATIVE_LABEL.sub(r"\g<1> [RELATIVE_NAME]", shielded)
-    shielded = _RE_ATTENDANT_PAREN.sub(r"Attendant ([RELATIVE_NAME])", shielded)
-    shielded = _RE_HINGLISH_NARRATIVE.sub(r"[PATIENT_NAME] \g<2>", shielded)
-    shielded = _RE_NURSING_KCO.sub(r"\g<1>[PATIENT_NAME]\g<3>", shielded)
-    shielded = _RE_HINDI_FEVER.sub(r"[PATIENT_NAME] \g<2>", shielded)
+    shielded, n = _RE_TIME_LOG_NAME.subn(r"\g<1>[NAME]", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_ATTENDANT_CALLER_WITNESS.subn(r"called by [CALLER_NAME]", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_ATTENDANT_LABEL.subn(lambda m: m.group(0).split(":")[0] + ": [RELATIVE_NAME]", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_LAB_RECEIVED_FROM.subn(r"Sample received from [PATIENT_NAME]'s attendant", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_DISCHARGE_NOTE_HEADER.subn(r"[PATIENT_NAME], \2", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_RELATIVE_LABEL.subn(r"\g<1> [RELATIVE_NAME]", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_ATTENDANT_PAREN.subn(r"Attendant ([RELATIVE_NAME])", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_HINGLISH_NARRATIVE.subn(r"[PATIENT_NAME] \g<2>", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_NURSING_KCO.subn(r"\g<1>[PATIENT_NAME]\g<3>", shielded)
+    _inc_detections(n)
+    shielded, n = _RE_HINDI_FEVER.subn(r"[PATIENT_NAME] \g<2>", shielded)
+    _inc_detections(n)
 
     # Label-anchored lines
     def _sub_label_name(m: re.Match) -> str:
         lead = m.group(0).split(":")[0]
         return f"{lead}: [PATIENT_NAME]"
-    shielded = _RE_LABEL_PATIENT_NAME.sub(_sub_label_name, shielded)
+    shielded, n = _RE_LABEL_PATIENT_NAME.subn(_sub_label_name, shielded)
+    _inc_detections(n)
 
     def _sub_label_rel(m: re.Match) -> str:
         lead = m.group(0).split(":")[0]
         return f"{lead}: [RELATIVE_NAME]"
-    shielded = _RE_LABEL_RELATIVE_NAME.sub(_sub_label_rel, shielded)
+    shielded, n = _RE_LABEL_RELATIVE_NAME.subn(_sub_label_rel, shielded)
+    _inc_detections(n)
 
     def _sub_label_mrn(m: re.Match) -> str:
         lead = m.group(0).split(":")[0]
         return f"{lead}: [MRN]"
-    shielded = _RE_LABEL_MRN.sub(_sub_label_mrn, shielded)
+    shielded, n = _RE_LABEL_MRN.subn(_sub_label_mrn, shielded)
+    _inc_detections(n)
 
     def _sub_label_dob(m: re.Match) -> str:
         lead = m.group(0).split(":")[0]
         return f"{lead}: [DOB]"
-    shielded = _RE_LABEL_DOB.sub(_sub_label_dob, shielded)
+    shielded, n = _RE_LABEL_DOB.subn(_sub_label_dob, shielded)
+    _inc_detections(n)
 
     def _sub_label_village(m: re.Match) -> str:
         lead = m.group(0).split(":")[0]
         return f"{lead}: [VILLAGE]"
-    shielded = _RE_LABEL_VILLAGE.sub(_sub_label_village, shielded)
+    shielded, n = _RE_LABEL_VILLAGE.subn(_sub_label_village, shielded)
+    _inc_detections(n)
 
     def _sub_label_addr(m: re.Match) -> str:
         lead = m.group(0).split(":")[0]
         return f"{lead}: [ADDRESS]"
-    shielded = _RE_LABEL_ADDRESS.sub(_sub_label_addr, shielded)
+    shielded, n = _RE_LABEL_ADDRESS.subn(_sub_label_addr, shielded)
+    _inc_detections(n)
 
     # Gazetteer-guided redactions (multi-word names and exact MRNs)
     if gazetteer:
         # MRNs
         for mrn in gazetteer.get("mrns", []):
             if len(mrn) >= 5 and mrn in shielded:
-                shielded = re.sub(r"\b" + re.escape(mrn) + r"\b", "[MRN]", shielded, flags=re.IGNORECASE)
+                shielded, n = re.subn(r"\b" + re.escape(mrn) + r"\b", "[MRN]", shielded, flags=re.IGNORECASE)
+                _inc_detections(n)
 
         # Multi-token and guarded single-token patient names
         for name in gazetteer.get("patient_names", []):
             tokens = name.split()
             if len(tokens) >= 2 and len(name) >= 4:
                 if name in shielded or name.lower() in shielded.lower():
-                    shielded = re.sub(r"(?<![A-Za-z0-9\u0900-\u097F])" + re.escape(name) + r"(?![A-Za-z0-9\u0900-\u097F])", "[PATIENT_NAME]", shielded, flags=re.IGNORECASE)
+                    shielded, n = re.subn(r"(?<![A-Za-z0-9\u0900-\u097F])" + re.escape(name) + r"(?![A-Za-z0-9\u0900-\u097F])", "[PATIENT_NAME]", shielded, flags=re.IGNORECASE)
+                    _inc_detections(n)
             elif len(tokens) == 1 and len(name) >= 4:
                 if name.lower() not in ("asha", "ward", "pill", "diet", "mode", "care", "left", "right", "ramesh"):
                     if name in shielded or name.lower() in shielded.lower():
-                        shielded = re.sub(r"(?<![A-Za-z0-9\u0900-\u097F])" + re.escape(name) + r"(?![A-Za-z0-9\u0900-\u097F])", "[PATIENT_NAME]", shielded, flags=re.IGNORECASE)
+                        shielded, n = re.subn(r"(?<![A-Za-z0-9\u0900-\u097F])" + re.escape(name) + r"(?![A-Za-z0-9\u0900-\u097F])", "[PATIENT_NAME]", shielded, flags=re.IGNORECASE)
+                        _inc_detections(n)
 
         # Relative names (globally matched with unicode boundary)
         for rname in gazetteer.get("relative_names", []):
             tokens = rname.split()
             if len(tokens) >= 2 and len(rname) >= 4:
                 if rname in shielded or rname.lower() in shielded.lower():
-                    shielded = re.sub(r"(?<![A-Za-z0-9\u0900-\u097F])" + re.escape(rname) + r"(?![A-Za-z0-9\u0900-\u097F])", "[RELATIVE_NAME]", shielded, flags=re.IGNORECASE)
+                    shielded, n = re.subn(r"(?<![A-Za-z0-9\u0900-\u097F])" + re.escape(rname) + r"(?![A-Za-z0-9\u0900-\u097F])", "[RELATIVE_NAME]", shielded, flags=re.IGNORECASE)
+                    _inc_detections(n)
 
         # Villages
         for v in gazetteer.get("villages", []):
             if len(v) >= 4 and v in shielded:
-                shielded = re.sub(r"\b" + re.escape(v) + r"\b", "[VILLAGE]", shielded, flags=re.IGNORECASE)
+                shielded, n = re.subn(r"\b" + re.escape(v) + r"\b", "[VILLAGE]", shielded, flags=re.IGNORECASE)
+                _inc_detections(n)
 
     # Step 3: Restore clinical preserve shields
     restored = restore_text(shielded, shields, gazetteer)
@@ -392,6 +442,7 @@ def sanitize_filename(relpath: str, gazetteer: dict[str, Any] | None = None) -> 
     if not has_pii:
         return relpath
 
+    _inc_detections(1)
     cleaned = stem
     cleaned = re.sub(r"(?i)(Discharge_Summary)_[A-Za-z_]+?(_(?:SNJ|JJH|DHH|UHID|IPD|IP|ADM)[A-Za-z0-9_-]*)", r"\1\2", cleaned)
     cleaned = _RE_FILENAME_PHONE.sub("", cleaned)
@@ -468,33 +519,48 @@ def clean_json_value(data: Any, gazetteer: dict[str, Any] | None = None, pid: st
                             clean_k = "[RELATIVE_NAME]"
                             break
 
+            if clean_k != k:
+                _inc_detections(1)
+
             # Value sanitization based on key type
             if norm_k in ("uhid", "hospital_uhid", "patient_ref", "mrn", "ipd_no", "reg_no"):
+                _inc_detections(1)
                 cleaned_dict[clean_k] = pid if pid is not None else "[MRN]"
             elif norm_k in ("name", "patient_name", "first", "local", "naam"):
+                _inc_detections(1)
                 cleaned_dict[clean_k] = "[PATIENT_NAME]"
             elif norm_k == "last":
+                _inc_detections(1)
                 cleaned_dict[clean_k] = ""
             elif norm_k in ("phone", "mobile", "mobile_no", "callback", "contact"):
-                cleaned_dict[clean_k] = "[PHONE]"
+                if isinstance(v, dict):
+                    cleaned_dict[clean_k] = clean_json_value(v, gazetteer, pid)
+                else:
+                    _inc_detections(1)
+                    cleaned_dict[clean_k] = "[PHONE]"
             elif norm_k in ("guardian", "relative_name", "pita_pati_ka_naam"):
                 if isinstance(v, dict):
                     cleaned_dict[clean_k] = clean_json_value(v, gazetteer, pid)
                 else:
+                    _inc_detections(1)
                     cleaned_dict[clean_k] = "[RELATIVE_NAME]"
             elif norm_k in ("aadhaar", "aadhar_no", "ids"):
                 if isinstance(v, dict):
                     cleaned_dict[clean_k] = clean_json_value(v, gazetteer, pid)
                 else:
+                    _inc_detections(1)
                     cleaned_dict[clean_k] = "[AADHAAR]"
             elif norm_k in ("village", "village_mohalla", "gaon"):
+                _inc_detections(1)
                 cleaned_dict[clean_k] = "[VILLAGE]"
             elif norm_k in ("pin", "zip", "postal_code", "pincode"):
+                _inc_detections(1)
                 cleaned_dict[clean_k] = "[PIN]"
             elif norm_k in ("address", "line", "street", "pata"):
                 if isinstance(v, dict):
                     cleaned_dict[clean_k] = clean_json_value(v, gazetteer, pid)
                 else:
+                    _inc_detections(1)
                     cleaned_dict[clean_k] = "[ADDRESS]"
             elif norm_k in ("data", "payload", "attachment") and isinstance(v, str):
                 cleaned_dict[clean_k] = sanitize_base64_string(v, gazetteer)

@@ -74,10 +74,11 @@ sanitized/ (192 clean files) + records.jsonl (821 records) + report.json (raksha
 
 ### 2. Multi-Format Identity Resolution & Linkage ([`starter/identity.py`](starter/identity.py), [`starter/identity_*.py`](starter/))
 - **Multi-Format Extraction:** Parses structured CSV/TSV columns (including transliterated Hindi headers like `Naam`, `Ling`, `Umar`, `Janm Tithi`, `Pita/Pati ka Naam`, `Gaon`), nested JSON (`dhh_patients.json`, `opd/*.json`, `lab/*.json`), `FHIR R4` Bundles (`Patient`, `Encounter`, `mothers-name` extensions, base64 `DocumentReference`), and clinical notes.
-- **Orthogonal 3-Key Blocking:** Reduces pairwise comparisons by **99.1%** (from 2,145 naive registration pairs to 22 candidates) while achieving **100% true pair candidate recall**. Blocking keys:
+- **Orthogonal 3-Key Blocking:** Reduces pairwise comparisons by **99.0%** (from 2,145 naive registration pairs to 22 candidates: `(2145 - 22)/2145 = 98.97%`) while achieving **100% true pair candidate recall**. Blocking keys:
   1. Exact 10-digit normalized mobile number.
-  2. Normalized 3-character phonetic name prefix + gender.
-  3. Hospital-scoped UHID string.
+  2. Normalized name + gender.
+  3. Relative name + relation + gender.
+  *(Safety Invariant: Never blocks on UHID alone, as UHIDs are hospital-scoped rather than globally unique).*
 - **None-Safe Pairwise Features:** Computes exact phone agreement, Devanagari-to-Latin transliteration Jaro-Winkler similarity, age delta bounds (|Δage| ≤ 2), and relative name concordance.
 - **Asymmetric Decision Engine with Household Guards:** Implements strict contradiction vetoes (explicit gender mismatch, age difference > 15 years). A dedicated **shared-phone household guard** isolates family members who share a mobile number unless first names or relative cues corroborate identity.
 - **Score-Ordered Constrained Union-Find:** Clusters candidate edges by descending decision confidence, enforcing lazy anti-transitivity conflict checks before merging sets: if patient A matches B and B matches C, but A and C possess a hard negative contradiction, the merge is vetoed. Result: **0 false merges** across all evaluations.
@@ -110,7 +111,7 @@ sanitized/ (192 clean files) + records.jsonl (821 records) + report.json (raksha
 
 The following metrics were measured on the official practice dataset (`dev/input`, 200 files across 4 hospital systems) using `check_dev.py` and `check_submission.py --run`:
 
-| Metric | Starter Baseline | Clarus Final Result | Official Target | Evaluation Status |
+| Metric | Starter Baseline | Clarus Final Result | Self-Check Benchmark | Evaluation Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **Output Contract** | OK | **`CONTRACT OK`** | Required | **PASSED** |
 | **Personal Data Leaked** | 2,718 / 3,230 (84.1%) | **`0 / 3,230 (0.0%)`** | < 10.0% | **PERFECT (0 leaks)** |
@@ -130,12 +131,12 @@ The following metrics were measured on the official practice dataset (`dev/input
 
 ---
 
-## Security & Regulatory Compliance
+## Security & Regulatory Context (Informed Design)
 
-- **DPDP Act 2023 & DPDP Rules 2025:** Aligned with Rule 6 security safeguards (encryption, obfuscation, and PII-free operational logging) and Rule 16 / Schedule II research anonymization standards.
-- **ABDM FHIR R4 IG v6.5.0:** Structural preservation of FHIR Document Bundles (Discharge Summaries, Diagnostic Reports, Prescriptions) while stripping identifiers (`meta.source`, `subject.display`, `identifier` values).
+- **DPDP Act 2023 & DPDP Rules 2025:** Architecturally informed by Rule 6 security safeguards (obfuscation, in-memory secret handling, and PII-free operational logging) and Rule 16 / Schedule II research anonymization concepts. Encryption-at-rest is designated for Phase 2 implementation.
+- **ABDM FHIR R4 IG v6.5.0:** Structural preservation of FHIR Document Bundles (Discharge Summaries, Diagnostic Reports, Prescriptions) while stripping direct identifiers (`meta.source`, `subject.display`, `identifier` values).
 - **Zero-Secret Persistence:** `RAKSHA_SECRET` is held purely in volatile memory. It is never logged, persisted, or leaked to outputs. Repeated runs with the same secret yield byte-identical outputs; different secrets yield unlinkable pseudonyms.
-- **Honest Quasi-Identifier Reporting:** Per-patient date shifting (`date_shift_max_days: 180`) and 5-year age banding (`age_band_years: 5`) are active. Note: `min_group_size: 5` remains marked as a roadmap item in [`config/policy.yaml`](config/policy.yaml); rare-group suppression and formal k-anonymity resistance are not claimed on the current build.
+- **Quasi-Identifier Policy & Roadmap:** Per-patient date shifting (`date_shift_max_days: 180`) and 5-year age banding (`age_band_years: 5`) are active in the pipeline. Note: `min_group_size: 5` in [`config/policy.yaml`](config/policy.yaml) is a documented policy target currently marked TODO; rare-group suppression and formal k-anonymity resistance are designated for Phase 2.
 
 ---
 

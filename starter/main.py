@@ -41,6 +41,8 @@ try:
         sanitize_filename,
         clean_json_value,
         sanitize_base64_string,
+        get_detections_count,
+        reset_detections_count,
     )
 except ImportError:  # allow importing starter.main as a package from repo root
     from starter.identity import IdentityResolver
@@ -50,6 +52,8 @@ except ImportError:  # allow importing starter.main as a package from repo root
         sanitize_filename,
         clean_json_value,
         sanitize_base64_string,
+        get_detections_count,
+        reset_detections_count,
     )
 
 # --------------------------------------------------------------------------- policy
@@ -428,6 +432,7 @@ def process_csv(
             len(name) >= 4 and name in h for name in gazetteer.get("patient_names", [])
         ):
             cleaned_h = f"Patient_{j}"
+            Stats.identifiers += 1
         out_header.append(cleaned_h)
 
         if any(
@@ -518,28 +523,40 @@ def process_csv(
             if not c.strip():
                 out_row.append(c)
             elif role == "mrn":
+                Stats.identifiers += 1
                 out_row.append(pid if pid is not None else "[MRN]")
             elif role == "patient_name":
+                Stats.identifiers += 1
                 out_row.append("[PATIENT_NAME]")
             elif role == "relative_name":
+                Stats.identifiers += 1
                 out_row.append("[RELATIVE_NAME]")
             elif role == "address":
+                Stats.identifiers += 1
                 out_row.append("[ADDRESS]")
             elif role == "village":
+                Stats.identifiers += 1
                 out_row.append("[VILLAGE]")
             elif role == "pin":
+                Stats.identifiers += 1
                 out_row.append("[PIN]")
             elif role == "phone":
+                Stats.identifiers += 1
                 out_row.append("[PHONE]")
             elif role == "aadhaar":
+                Stats.identifiers += 1
                 out_row.append("[AADHAAR]")
             elif role == "abha":
+                Stats.identifiers += 1
                 out_row.append("[ABHA_NUMBER]")
             elif role == "pan":
+                Stats.identifiers += 1
                 out_row.append("[PAN]")
             elif role == "insurance":
+                Stats.identifiers += 1
                 out_row.append("[INSURANCE_ID]")
             elif role == "dob":
+                Stats.identifiers += 1
                 if shift_days is not None:
                     shifted, ok = _shift_date_str(c, shift_days, col_date_orders[j])
                     if ok:
@@ -561,6 +578,7 @@ def process_csv(
                 else:
                     out_row.append(c)
             elif role == "email":
+                Stats.identifiers += 1
                 out_row.append("[EMAIL]")
             elif role == "freetext":
                 out_row.append(redact_text(c, gazetteer))
@@ -703,6 +721,7 @@ def process_json(
         if isinstance(data, dict) and data.get("resourceType") == "Bundle":
             if "meta" in data and isinstance(data["meta"], dict) and "source" in data["meta"]:
                 data["meta"]["source"] = f"#{pid}" if pid is not None else "#[MRN]"
+                Stats.identifiers += 1
 
             ref_targets: set[str] = set()
             if pid is not None:
@@ -724,10 +743,13 @@ def process_json(
                 rt = res.get("resourceType")
                 if "meta" in res and isinstance(res["meta"], dict) and "source" in res["meta"]:
                     res["meta"]["source"] = f"#{pid}" if pid is not None else "#[MRN]"
+                    Stats.identifiers += 1
                 if "subject" in res and isinstance(res["subject"], dict) and "display" in res["subject"]:
                     res["subject"]["display"] = "[PATIENT_NAME]"
+                    Stats.identifiers += 1
                 if "patient" in res and isinstance(res["patient"], dict) and "display" in res["patient"]:
                     res["patient"]["display"] = "[PATIENT_NAME]"
+                    Stats.identifiers += 1
                 if rt == "Patient":
                     if pid:
                         res["id"] = pid
@@ -735,10 +757,13 @@ def process_json(
                             entry["fullUrl"] = f"Patient/{pid}"
                     res["text"] = {"status": "empty", "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">[REDACTED]</div>"}
                     res["name"] = [{"text": "[PATIENT_NAME]"}]
+                    Stats.identifiers += 1
                     if "telecom" in res:
                         res["telecom"] = [{"system": "phone", "value": "[PHONE]"}]
+                        Stats.identifiers += 1
                     if "address" in res:
                         res["address"] = [{"line": ["[ADDRESS]"], "city": "[VILLAGE]", "postalCode": "[PIN]"}]
+                        Stats.identifiers += 1
                     if "birthDate" in res and isinstance(res["birthDate"], str) and shift_days is None:
                         res["birthDate"] = res["birthDate"][:4] + "-01-01"
                         doc_generalized = True
@@ -746,6 +771,7 @@ def process_json(
                         for ident in res["identifier"]:
                             if not isinstance(ident, dict):
                                 continue
+                            Stats.identifiers += 1
                             sys_u = str(ident.get("system", "")).lower()
                             codes = {
                                 str(c.get("code", "")).upper()
@@ -762,18 +788,23 @@ def process_json(
                                 ident["value"] = pid if pid is not None else "[MRN]"
                     if "contact" in res and isinstance(res["contact"], list):
                         for c in res["contact"]:
+                            Stats.identifiers += 1
                             c["name"] = {"text": "[RELATIVE_NAME]"}
                             if "telecom" in c:
                                 c["telecom"] = [{"system": "phone", "value": "[PHONE]"}]
+                                Stats.identifiers += 1
                             if "address" in c:
                                 c["address"] = {"line": ["[ADDRESS]"]}
+                                Stats.identifiers += 1
                     if "extension" in res and isinstance(res["extension"], list):
                         for ext in res["extension"]:
                             if "valueString" in ext:
                                 ext["valueString"] = "[RELATIVE_NAME]"
+                                Stats.identifiers += 1
                 elif rt == "Encounter":
                     for ident in res.get("identifier") or []:
                         ident["value"] = pid if pid is not None else "[MRN]"
+                        Stats.identifiers += 1
                 elif rt == "DocumentReference":
                     for cnt in res.get("content") or []:
                         att = (cnt or {}).get("attachment") or {}
@@ -786,9 +817,11 @@ def process_json(
             p_dict = data["patient"]
             p_dict["name"] = "[PATIENT_NAME]"
             p_dict["phone"] = "[PHONE]"
+            Stats.identifiers += 2
             for id_k in ("hospital_uhid", "uhid", "mrn", "patient_ref", "patient_id"):
                 if id_k in p_dict:
                     p_dict[id_k] = pid if pid is not None else "[MRN]"
+                    Stats.identifiers += 1
             if "remarks" in data and isinstance(data["remarks"], str):
                 data["remarks"] = redact_text(data["remarks"], gazetteer)
             if _generalize_json_record(data, pid, shift_days):
@@ -824,19 +857,25 @@ def process_json(
                 for id_k in ("patient_ref", "uhid", "mrn", "patient_id"):
                     if id_k in v:
                         v[id_k] = pid if pid is not None else "[MRN]"
+                        Stats.identifiers += 1
                 if "address_note" in v:
                     v["address_note"] = "[ADDRESS]"
+                    Stats.identifiers += 1
                 if "notes" in v and isinstance(v["notes"], str):
                     v["notes"] = redact_text(v["notes"], gazetteer)
                 if "patient" in v and isinstance(v["patient"], dict):
                     if "name" in v["patient"]:
                         v["patient"]["name"] = "[PATIENT_NAME]"
+                        Stats.identifiers += 1
                     if "mobile" in v["patient"]:
                         v["patient"]["mobile"] = "[PHONE]"
+                        Stats.identifiers += 1
                     if "phone" in v["patient"]:
                         v["patient"]["phone"] = "[PHONE]"
+                        Stats.identifiers += 1
                     if "hospital_uhid" in v["patient"]:
                         v["patient"]["hospital_uhid"] = pid if pid is not None else "[MRN]"
+                        Stats.identifiers += 1
                 if _generalize_json_record(v, pid, shift_days, visit_order):
                     Stats.generalized += 1
         elif isinstance(data, dict) and "patients" in data and isinstance(data["patients"], list):
@@ -850,25 +889,32 @@ def process_json(
                 for id_k in ("uhid", "mrn", "patient_ref", "patient_id", "reg_no"):
                     if id_k in p:
                         p[id_k] = pid if pid is not None else "[MRN]"
+                        Stats.identifiers += 1
                 if "name" in p and isinstance(p["name"], dict):
                     p["name"]["first"] = "[PATIENT_NAME]"
                     p["name"]["last"] = ""
                     p["name"]["local"] = "[PATIENT_NAME]"
+                    Stats.identifiers += 2
                 if "guardian" in p and isinstance(p["guardian"], dict):
                     p["guardian"]["name"] = "[RELATIVE_NAME]"
+                    Stats.identifiers += 1
                 if "contact" in p and isinstance(p["contact"], dict):
                     p["contact"]["mobile"] = "[PHONE]"
                     p["contact"]["email"] = "[EMAIL]"
+                    Stats.identifiers += 2
                 if "address" in p and isinstance(p["address"], dict):
                     p["address"]["line"] = "[ADDRESS]"
                     p["address"]["village"] = "[VILLAGE]"
                     p["address"]["pin"] = "[PIN]"
+                    Stats.identifiers += 3
                 if "ids" in p and isinstance(p["ids"], dict):
                     p["ids"]["aadhar_no"] = "[AADHAAR]"
                     p["ids"]["abha"] = "[ABHA_NUMBER]"
+                    Stats.identifiers += 2
                 row_gen = _generalize_json_record(p, pid, shift_days)
                 if "dob" in p and shift_days is None:
                     p["dob"] = "[DOB]"
+                    Stats.identifiers += 1
                 if row_gen:
                     Stats.generalized += 1
         else:
@@ -1022,6 +1068,7 @@ def main() -> int:
         return 1
 
     Stats.identifiers = 0
+    reset_detections_count()
     Stats.records = 0
     Stats.linked = 0
     Stats.generalized = 0
@@ -1107,7 +1154,7 @@ def main() -> int:
         "files": files,
         "counts": {
             "files_total": len(files), "files_sanitized": n_san, "files_quarantined": len(files) - n_san,
-            "records_processed": len(records), "identifiers_detected": Stats.identifiers,
+            "records_processed": len(records), "identifiers_detected": Stats.identifiers + get_detections_count(),
             "records_linked": sum(r["patient"] is not None for r in records),
             "records_generalized": Stats.generalized, "records_suppressed": Stats.suppressed,
             "records_quarantined": 0,
