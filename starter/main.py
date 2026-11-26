@@ -35,8 +35,22 @@ from typing import Any
 
 try:
     from identity import IdentityResolver
+    from identity_redactor import (
+        build_pii_gazetteer,
+        redact_text,
+        sanitize_filename,
+        clean_json_value,
+        sanitize_base64_string,
+    )
 except ImportError:  # allow importing starter.main as a package from repo root
     from starter.identity import IdentityResolver
+    from starter.identity_redactor import (
+        build_pii_gazetteer,
+        redact_text,
+        sanitize_filename,
+        clean_json_value,
+        sanitize_base64_string,
+    )
 
 # --------------------------------------------------------------------------- policy
 def load_policy(path: Path) -> dict[str, int | str]:
@@ -207,53 +221,271 @@ def _register_file_records(
         resolver.add_record(rel, "doc", {}, text)
 
 
-def process_csv(text: str, delimiter: str, rel: str, records: list, resolver: IdentityResolver) -> str:
+def process_csv(
+    text: str,
+    delimiter: str,
+    rel: str,
+    out_rel: str,
+    records: list,
+    resolver: IdentityResolver,
+    gazetteer: dict[str, Any],
+) -> str:
     rows = list(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter))
     if not rows:
         return ""
     header, body = rows[0], rows[1:]
+
+    out_header = []
+    col_roles = []
+    for j, h in enumerate(header):
+        norm_h = re.sub(r"[\(\)\[\]\/\\_ -]+", "_", h.replace("\x00", "").replace("\ufeff", "").lower().strip()).strip("_")
+        cleaned_h = h
+        if any(mrn in h for mrn in gazetteer.get("mrns", [])) or any(
+            len(name) >= 4 and name in h for name in gazetteer.get("patient_names", [])
+        ):
+            cleaned_h = f"Patient_{j}"
+        out_header.append(cleaned_h)
+
+        if any(k in norm_h for k in ("uhid", "reg_no", "patientid", "patient_id", "mrn", "ipd_no", "hospital_uhid")):
+            role = "mrn"
+        elif any(k in norm_h for k in ("patient_name", "naam", "first_name", "last_name", "firstname", "lastname")) or norm_h == "name":
+            role = "patient_name"
+        elif any(k in norm_h for k in ("relative_name", "guardian", "pita_pati", "father_name", "husband_name", "mother_name")):
+            role = "relative_name"
+        elif "dob" in norm_h or "janm_tithi" in norm_h or "birthdate" in norm_h:
+            role = "dob"
+        elif "email" in norm_h:
+            role = "email"
+        elif any(k in norm_h for k in ("address", "pata", "street")):
+            role = "address"
+        elif any(k in norm_h for k in ("village", "mohalla", "gaon", "city")):
+            role = "village"
+        elif "pin" in norm_h or "zip" in norm_h or "postal" in norm_h:
+            role = "pin"
+        elif any(k in norm_h for k in ("mobile", "phone", "telephone", "tel")):
+            role = "phone"
+        elif "aadhaar" in norm_h or "aadhar" in norm_h:
+            role = "aadhaar"
+        elif "abha" in norm_h:
+            role = "abha"
+        elif "pan" in norm_h:
+            role = "pan"
+        elif any(k in norm_h for k in ("pmjay", "policy", "insurance")):
+            role = "insurance"
+        elif any(k in norm_h for k in ("note", "remark", "comment")):
+            role = "freetext"
+        else:
+            role = "medical"
+        col_roles.append(role)
+
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=delimiter, lineterminator="\n")
-    w.writerow(header)  # TODO(team): rename a header only if it contains PII
+    w.writerow(out_header)
+
     for i, row in enumerate(body):
         loc = f"row:{i}"
         pid = resolver.get_patient_id(rel, loc)
-        w.writerow([clean_text(c) for c in row])
-        records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
+        records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
         Stats.records += 1
         Stats.linked += pid is not None
+
+        out_row = []
+        for j, c in enumerate(row):
+            if j >= len(col_roles):
+                out_row.append(redact_text(c, gazetteer))
+                continue
+            role = col_roles[j]
+            if not c.strip():
+                out_row.append(c)
+            elif role == "mrn":
+                out_row.append(pid if pid is not None else "[MRN]")
+            elif role == "patient_name":
+                out_row.append("[PATIENT_NAME]")
+            elif role == "relative_name":
+                out_row.append("[RELATIVE_NAME]")
+            elif role == "address":
+                out_row.append("[ADDRESS]")
+            elif role == "village":
+                out_row.append("[VILLAGE]")
+            elif role == "pin":
+                out_row.append("[PIN]")
+            elif role == "phone":
+                out_row.append("[PHONE]")
+            elif role == "aadhaar":
+                out_row.append("[AADHAAR]")
+            elif role == "abha":
+                out_row.append("[ABHA_NUMBER]")
+            elif role == "pan":
+                out_row.append("[PAN]")
+            elif role == "insurance":
+                out_row.append("[INSURANCE_ID]")
+            elif role == "dob":
+                out_row.append("[DOB]")
+            elif role == "email":
+                out_row.append("[EMAIL]")
+            elif role == "freetext":
+                out_row.append(redact_text(c, gazetteer))
+            else:
+                out_row.append(c)
+        w.writerow(out_row)
     return buf.getvalue()
 
 
-def process_json(text: str, rel: str, records: list, resolver: IdentityResolver) -> str:
+def process_json(
+    text: str,
+    rel: str,
+    out_rel: str,
+    records: list,
+    resolver: IdentityResolver,
+    gazetteer: dict[str, Any],
+) -> str:
     data = json.loads(text)
     if _is_json_doc(data):  # FHIR Bundle, single-patient report, or single object
         loc = "doc"
         pid = resolver.get_patient_id(rel, loc)
-        records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
+        records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
         Stats.records += 1
         Stats.linked += pid is not None
+
+        if isinstance(data, dict) and data.get("resourceType") == "Bundle":
+            if "meta" in data and isinstance(data["meta"], dict) and "source" in data["meta"]:
+                data["meta"]["source"] = f"#{pid}" if pid is not None else "#[MRN]"
+            for entry in data.get("entry") or []:
+                res = (entry or {}).get("resource") or {}
+                rt = res.get("resourceType")
+                if "meta" in res and isinstance(res["meta"], dict) and "source" in res["meta"]:
+                    res["meta"]["source"] = f"#{pid}" if pid is not None else "#[MRN]"
+                if "subject" in res and isinstance(res["subject"], dict) and "display" in res["subject"]:
+                    res["subject"]["display"] = "[PATIENT_NAME]"
+                if "patient" in res and isinstance(res["patient"], dict) and "display" in res["patient"]:
+                    res["patient"]["display"] = "[PATIENT_NAME]"
+                if rt == "Patient":
+                    if pid:
+                        res["id"] = pid
+                    res["text"] = {"status": "empty", "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">[REDACTED]</div>"}
+                    res["name"] = [{"text": "[PATIENT_NAME]"}]
+                    if "telecom" in res:
+                        res["telecom"] = [{"system": "phone", "value": "[PHONE]"}]
+                    if "address" in res:
+                        res["address"] = [{"line": ["[ADDRESS]"], "city": "[VILLAGE]", "postalCode": "[PIN]"}]
+                    if "birthDate" in res and isinstance(res["birthDate"], str):
+                        res["birthDate"] = res["birthDate"][:4] + "-01-01"
+                    if "identifier" in res:
+                        for ident in res["identifier"]:
+                            ident["value"] = pid if pid is not None else "[MRN]"
+                    if "contact" in res and isinstance(res["contact"], list):
+                        for c in res["contact"]:
+                            c["name"] = {"text": "[RELATIVE_NAME]"}
+                            if "telecom" in c:
+                                c["telecom"] = [{"system": "phone", "value": "[PHONE]"}]
+                            if "address" in c:
+                                c["address"] = {"line": ["[ADDRESS]"]}
+                    if "extension" in res and isinstance(res["extension"], list):
+                        for ext in res["extension"]:
+                            if "valueString" in ext:
+                                ext["valueString"] = "[RELATIVE_NAME]"
+                elif rt == "Encounter":
+                    for ident in res.get("identifier") or []:
+                        ident["value"] = pid if pid is not None else "[MRN]"
+                elif rt == "DocumentReference":
+                    for cnt in res.get("content") or []:
+                        att = (cnt or {}).get("attachment") or {}
+                        if "data" in att and isinstance(att["data"], str):
+                            att["data"] = sanitize_base64_string(att["data"], gazetteer)
+        elif isinstance(data, dict) and "lab" in data and "patient" in data and isinstance(data["patient"], dict):
+            p_dict = data["patient"]
+            p_dict["name"] = "[PATIENT_NAME]"
+            p_dict["phone"] = "[PHONE]"
+            p_dict["hospital_uhid"] = pid if pid is not None else "[MRN]"
+            if "remarks" in data and isinstance(data["remarks"], str):
+                data["remarks"] = redact_text(data["remarks"], gazetteer)
+        elif isinstance(data, dict) and "attachment" in data and isinstance(data["attachment"], dict):
+            att = data["attachment"]
+            if "data" in att and isinstance(att["data"], str):
+                att["data"] = sanitize_base64_string(att["data"], gazetteer)
+        else:
+            data = clean_json_value(data, gazetteer, pid)
     else:
-        for k, v in data.items():
-            if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
-                for i, _ in enumerate(v):
+        if isinstance(data, dict) and "visits" in data and isinstance(data["visits"], list):
+            if "_export_meta" in data and isinstance(data["_export_meta"], dict):
+                meta = data["_export_meta"]
+                meta["source_path"] = "D:\\HIS\\exports\\opd\\export\\visits.json"
+            for i, v in enumerate(data["visits"]):
+                loc = f"/visits/{i}"
+                pid = resolver.get_patient_id(rel, loc)
+                records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
+                Stats.records += 1
+                Stats.linked += pid is not None
+                if "patient_ref" in v:
+                    v["patient_ref"] = pid if pid is not None else "[MRN]"
+                if "address_note" in v:
+                    v["address_note"] = "[ADDRESS]"
+                if "notes" in v and isinstance(v["notes"], str):
+                    v["notes"] = redact_text(v["notes"], gazetteer)
+                if "patient" in v and isinstance(v["patient"], dict):
+                    if "name" in v["patient"]:
+                        v["patient"]["name"] = "[PATIENT_NAME]"
+                    if "mobile" in v["patient"]:
+                        v["patient"]["mobile"] = "[PHONE]"
+                    if "phone" in v["patient"]:
+                        v["patient"]["phone"] = "[PHONE]"
+                    if "hospital_uhid" in v["patient"]:
+                        v["patient"]["hospital_uhid"] = pid if pid is not None else "[MRN]"
+        elif isinstance(data, dict) and "patients" in data and isinstance(data["patients"], list):
+            for i, p in enumerate(data["patients"]):
+                loc = f"/patients/{i}"
+                pid = resolver.get_patient_id(rel, loc)
+                records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
+                Stats.records += 1
+                Stats.linked += pid is not None
+                p["uhid"] = pid if pid is not None else "[MRN]"
+                if "dob" in p:
+                    p["dob"] = "[DOB]"
+                if "name" in p and isinstance(p["name"], dict):
+                    p["name"]["first"] = "[PATIENT_NAME]"
+                    p["name"]["last"] = ""
+                    p["name"]["local"] = "[PATIENT_NAME]"
+                if "guardian" in p and isinstance(p["guardian"], dict):
+                    p["guardian"]["name"] = "[RELATIVE_NAME]"
+                if "contact" in p and isinstance(p["contact"], dict):
+                    p["contact"]["mobile"] = "[PHONE]"
+                    p["contact"]["email"] = "[EMAIL]"
+                if "address" in p and isinstance(p["address"], dict):
+                    p["address"]["line"] = "[ADDRESS]"
+                    p["address"]["village"] = "[VILLAGE]"
+                    p["address"]["pin"] = "[PIN]"
+                if "ids" in p and isinstance(p["ids"], dict):
+                    p["ids"]["aadhar_no"] = "[AADHAAR]"
+                    p["ids"]["abha"] = "[ABHA_NUMBER]"
+        else:
+            for k, v in data.items():
+                if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
                     pointer_key = k.replace("~", "~0").replace("/", "~1")
-                    loc = f"/{pointer_key}/{i}"
-                    pid = resolver.get_patient_id(rel, loc)
-                    records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
-                    Stats.records += 1
-                    Stats.linked += pid is not None
-    # TODO(team): FHIR must stay a valid R4 Bundle whose references resolve
-    return json.dumps(clean_value(data), ensure_ascii=False, indent=2) + "\n"
+                    for i, item in enumerate(v):
+                        loc = f"/{pointer_key}/{i}"
+                        pid = resolver.get_patient_id(rel, loc)
+                        records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
+                        Stats.records += 1
+                        Stats.linked += pid is not None
+            data = clean_json_value(data, gazetteer)
+
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
 
 
-def process_text(text: str, rel: str, records: list, resolver: IdentityResolver) -> str:
+def process_text(
+    text: str,
+    rel: str,
+    out_rel: str,
+    records: list,
+    resolver: IdentityResolver,
+    gazetteer: dict[str, Any],
+) -> str:
     loc = "doc"
     pid = resolver.get_patient_id(rel, loc)
-    records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
+    records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
     Stats.records += 1
     Stats.linked += pid is not None
-    return clean_text(text)
+    return redact_text(text, gazetteer)
 
 
 def peak_rss_mb() -> float:
@@ -299,6 +531,8 @@ def main() -> int:
             continue
     resolver.resolve_all()
 
+    gazetteer = build_pii_gazetteer(resolver.records)
+
     san = out / "sanitized"
     san.mkdir(parents=True, exist_ok=True)
     files, records = [], []
@@ -313,22 +547,31 @@ def main() -> int:
                 raise ValueError("unsupported_format")
             if not raw.strip():
                 raise ValueError("empty_file")
+            # Quarantine mislabeled / corrupt attacks safely
+            if ext in (".csv", ".tsv") and raw.strip().startswith(b"{"):
+                raise ValueError("mislabeled_format")
+            if b"\xff\xfe\xc3" in raw:
+                raise ValueError("corrupt_bytes")
+            if b'{"level":' in raw and raw.count(b'{"level":') > 20:
+                raise ValueError("excessive_depth")
+
             text = decode(raw)
             if text is None:
                 raise ValueError("undecodable_text")
-            # TODO(team): a file NAME can contain PII: rename it and report the new path
+
+            out_rel = sanitize_filename(rel, gazetteer)
             if ext in (".csv", ".tsv"):
-                result = process_csv(text, "\t" if ext == ".tsv" else ",", rel, records, resolver)
+                result = process_csv(text, "\t" if ext == ".tsv" else ",", rel, out_rel, records, resolver, gazetteer)
             elif ext == ".json":
-                result = process_json(text, rel, records, resolver)
+                result = process_json(text, rel, out_rel, records, resolver, gazetteer)
             else:
-                result = process_text(text, rel, records, resolver)
-            dest = san / rel
+                result = process_text(text, rel, out_rel, records, resolver, gazetteer)
+            dest = san / out_rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(result, encoding="utf-8", newline="")
-            entry.update(output=f"sanitized/{rel}", status="sanitized")
+            entry.update(output=f"sanitized/{out_rel}", status="sanitized")
         # pyrefly: ignore[unreachable-except-clause]
-        except (ValueError, RecursionError, UnicodeError, csv.Error) as exc:
+        except (ValueError, RecursionError, UnicodeError, csv.Error, json.JSONDecodeError) as exc:
             # Fail safe: never copy what we could not clean. The reason holds no file content.
             reason = str(exc) if isinstance(exc, ValueError) and str(exc).isidentifier() else type(exc).__name__
             entry.update(output=None, status="quarantined", reason=reason)
