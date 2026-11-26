@@ -28,11 +28,43 @@ _RE_MRN_INLINE = re.compile(
     r"\b(?:SNJ/\d{2}/\d{4,}|JJH-\d{5,}|DHH\d{4}-\d{4,}|DHH-IPD-\d{4,}"
     r"|UHID-\d{4,}|IPD-\d{4}-\d{4,}|IP/\d{2}/\d{4,}|ADM\d{5,})\b"
 )
+_RE_GENERIC_MRN_INLINE = re.compile(
+    r"\b([A-Z]{2,5})(?:[-/](?:[A-Z]{2,4}|\d{2,4}))?[-/](\d{4,})\b"
+)
+_NON_MRN_PREFIXES = frozenset(
+    {
+        "ICD",
+        "AMB",
+        "HD",
+        "BL",
+        "OPD",
+        "POL",
+        "UP",
+        "PMJAY",
+        "ABHA",
+        "UID",
+        "PAN",
+        "PIN",
+        "COVID",
+        "SARS",
+        "ISO",
+        "RFC",
+    }
+)
 _RE_PIN = re.compile(r"(?:[-–:]|\bPIN[:\s-]*)\s*(\d{6})\b", re.IGNORECASE)
 _RE_PIN_BARE = re.compile(r"^\d{6}$")
 
 _RE_REL_PAREN_OR_INLINE = re.compile(
     r"\b([SDWC]/[Oo])\s+([^\n,();|\[\]]{2,50})"
+)
+_RE_HINDI_REL_LEAD = re.compile(
+    r"^[ \t]*([^\n,;()|:\[\]]{2,40}?)\s*(?:,\s*|\s+)(पुत्र|पुत्री|पत्नी)\s+"
+    r"(?!का(?:\s|$)|की(?:\s|$)|के(?:\s|$))([^\n,;()|:\[\]]{2,45}?)(?=[,\n.;|]|$)",
+    re.MULTILINE,
+)
+_RE_HINDI_REL_INLINE = re.compile(
+    r"(?:^|[\s,(])(पुत्र|पुत्री|पत्नी)\s*[:\-]?\s*"
+    r"(?!का(?:\s|$)|की(?:\s|$)|के(?:\s|$))([^\n,;()|:\[\]]{2,45})(?=[,\n.;)|]|$)"
 )
 _RE_DISCHARGE_NOTE_LEAD = re.compile(
     r"^[ \t]*([A-Z][a-zA-Z. ]{1,40}?),\s*([SDWC]/[Oo])\s+([^\n,;]{2,50}?)(?:,|$)",
@@ -102,37 +134,59 @@ _ADDR_LANDMARK_FRAGMENTS = (
 # Canonical alias sets for normalized CSV/TSV/JSON keys.
 _KEY_ALIASES: dict[str, str] = {
     "patient_name": "name",
+    "patient_full_name": "name",
+    "full_patient_name": "name",
     "name": "name",
     "full_name": "name",
     "naam": "name",
+    "naam_mareez": "name",
     "first_name": "first_name",
     "firstname": "first_name",
     "last_name": "last_name",
     "lastname": "last_name",
     "phone": "phone",
+    "phone_no": "phone",
+    "phone_number": "phone",
     "mobile": "phone",
     "mobile_no": "phone",
+    "mobile_number": "phone",
     "mob": "phone",
+    "contact": "phone",
+    "contact_no": "phone",
+    "contact_number": "phone",
+    "whatsapp": "phone",
+    "whatsapp_no": "phone",
     "telephone": "phone",
     "tel": "phone",
     "email": "email",
     "e_mail": "email",
     "mrn": "mrn",
+    "mrn_no": "mrn",
+    "mr_no": "mrn",
+    "mr_number": "mrn",
     "uhid": "mrn",
     "reg_no": "mrn",
+    "reg_number": "mrn",
     "registration_no": "mrn",
+    "registration_number": "mrn",
     "patient_id": "mrn",
     "patientid": "mrn",
     "patient_ref": "mrn",
     "hospital_uhid": "mrn",
+    "hosp_id": "mrn",
     "ipd_no": "mrn",
     "abha": "abha",
+    "abha_id": "abha",
     "abha_no": "abha",
     "abha_number": "abha",
     "aadhaar": "aadhaar",
     "aadhaar_no": "aadhaar",
+    "aadhaar_number": "aadhaar",
     "aadhar": "aadhaar",
     "aadhar_no": "aadhaar",
+    "aadhar_number": "aadhaar",
+    "uid": "aadhaar",
+    "uid_no": "aadhaar",
     "pan": "pan",
     "payer_pan": "pan",
     "pan_no": "pan",
@@ -153,15 +207,27 @@ _KEY_ALIASES: dict[str, str] = {
     "age_sex": "age_sex",
     "age_gender": "age_sex",
     "relation": "relation",
+    "relation_type": "relation",
+    "rel_type": "relation",
+    "relative_relation": "relation",
     "relative_name": "relative_name",
+    "rel_name": "relative_name",
     "guardian": "guardian",
     "relative": "guardian",
     "pita_pati_ka_naam": "guardian",
+    "father": "father_name",
     "father_name": "father_name",
+    "husband": "husband_name",
     "husband_name": "husband_name",
+    "spouse_name": "husband_name",
+    "wife_name": "husband_name",
     "mother_name": "mother_name",
     "village": "village",
     "village_mohalla": "village",
+    "gram_mohalla": "village",
+    "village_town": "village",
+    "city_village": "village",
+    "town": "village",
     "gaon": "village",
     "city": "village",
     "pin": "pin",
@@ -170,6 +236,7 @@ _KEY_ALIASES: dict[str, str] = {
     "zip": "pin",
     "postal_code": "pin",
     "postalcode": "pin",
+    "postal_index": "pin",
     "address": "address",
     "address_note": "address",
     "pata": "address",
@@ -185,9 +252,12 @@ _GENDER_MAP: dict[str, str] = {
     "f": "F",
     "female": "F",
     "महिला": "F",
+    "स्त्री": "F",
     "o": "O",
     "other": "O",
     "अन्य": "O",
+    "transgender": "O",
+    "tg": "O",
 }
 
 _HOSPITAL_MARKERS: tuple[tuple[str, str], ...] = (
@@ -205,6 +275,119 @@ _HOSPITAL_MARKERS: tuple[tuple[str, str], ...] = (
     ("uhid-", "arogya"),
     ("adm0", "arogya"),
 )
+
+_FACILITY_GENERIC_WORDS = frozenset(
+    {
+        "hospital",
+        "hospitals",
+        "multispeciality",
+        "multispecialty",
+        "specialty",
+        "charitable",
+        "seva",
+        "sadan",
+        "clinic",
+        "centre",
+        "center",
+        "institute",
+        "nursing",
+        "home",
+        "foundation",
+        "trust",
+        "opd",
+        "parcha",
+    }
+)
+_GENERIC_PATH_TOKENS = frozenset(
+    {
+        "reg",
+        "registration",
+        "patients",
+        "patient",
+        "legacy",
+        "export",
+        "opd",
+        "ipd",
+        "lab",
+        "labs",
+        "results",
+        "result",
+        "claims",
+        "claim",
+        "billing",
+        "discharge",
+        "summary",
+        "notes",
+        "note",
+        "nursing",
+        "rx",
+        "fhir",
+        "bundle",
+        "report",
+        "reports",
+        "bulk",
+        "whatsapp",
+        "forward",
+        "pathkind",
+        "lifeline",
+        "clean",
+        "misc",
+        "protocol",
+        "dengue",
+        "management",
+        "drug",
+        "formulary",
+        "ward",
+        "census",
+        "reference",
+        "ranges",
+        "helpdesk",
+        "tickets",
+        "ambulance",
+        "log",
+        "readme",
+        "fam",
+        "unknown",
+        "sample",
+        "test",
+        "doc",
+        "data",
+        "file",
+        "files",
+        "records",
+        "record",
+        "visits",
+        "visit",
+        "ds",
+    }
+)
+_GENERIC_MRN_PREFIXES = frozenset({"UHID", "IPD", "IP", "ADM", "MRN", "REG", "FILE", "UNKNOWN"})
+_MONTH_MAP: dict[str, int] = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
 
 
 @dataclass
@@ -228,6 +411,8 @@ class RecordIdentity:
     gender: str | None = None
     village: str | None = None
     pin: str | None = None
+    dob_date_order: str | None = None
+    event_dates: list[str] = field(default_factory=list)
 
 
 class IdentityResolver:
@@ -273,7 +458,11 @@ class IdentityResolver:
         """Run normalization, blocking, scoring, conflict-safe clustering, and compute PSN IDs."""
         fn = pseudonym_fn if pseudonym_fn is not None else self._pseudonym_fn
         shift_fn = date_shift_fn if date_shift_fn is not None else self._date_shift_fn
-        self.normalized = [normalize_identity(r) for r in self.records]
+        inferred_orders = _infer_date_orders(self.records)
+        self.normalized = [
+            normalize_identity(r, dob_order_override=order)
+            for r, order in zip(self.records, inferred_orders)
+        ]
         self._patient_ids.clear()
         self._patient_keys.clear()
         self._date_shifts.clear()
@@ -283,10 +472,16 @@ class IdentityResolver:
         if n == 0:
             return
 
-        candidate_pairs = generate_candidate_pairs(self.normalized)
+        base_candidates = generate_candidate_pairs(self.normalized)
+        mrn_equiv = _build_mrn_equiv(self.normalized, base_candidates)
+        candidate_pairs = (
+            generate_candidate_pairs(self.normalized, mrn_equiv=mrn_equiv)
+            if mrn_equiv
+            else base_candidates
+        )
         scored_edges: list[tuple[float, int, int]] = []
         for i, j in candidate_pairs:
-            sc = score_pair(self.normalized[i], self.normalized[j])
+            sc = score_pair(self.normalized[i], self.normalized[j], mrn_equiv=mrn_equiv)
             if sc >= LINK_THRESHOLD:
                 scored_edges.append((sc, i, j))
 
@@ -307,7 +502,9 @@ class IdentityResolver:
             key = (x, y) if x < y else (y, x)
             cached = conflict_cache.get(key)
             if cached is None:
-                cached = has_hard_conflict(self.normalized[x], self.normalized[y])
+                cached = has_hard_conflict(
+                    self.normalized[x], self.normalized[y], mrn_equiv=mrn_equiv
+                )
                 conflict_cache[key] = cached
             return cached
 
@@ -323,6 +520,21 @@ class IdentityResolver:
             parent[rj] = ri
             members[ri].extend(members[rj])
             del members[rj]
+
+        # Phase 6 Pass 2: uniqueness-gated recovery for sparse clinical singletons.
+        pass2_merges = _find_unique_pass2_merges(
+            self.normalized, members, find, pair_conflicts
+        )
+        for s_idx, target_root in pass2_merges:
+            r_target = find(target_root)
+            if find(s_idx) == r_target:
+                continue
+            if any(pair_conflicts(s_idx, m_idx) for m_idx in members[r_target]):
+                continue
+            s_root = find(s_idx)
+            parent[s_root] = r_target
+            members[r_target].extend(members[s_root])
+            del members[s_root]
 
         all_components = [sorted(idxs) for idxs in members.values()]
         linked_clusters = [idxs for idxs in all_components if len(idxs) >= 2]
@@ -411,7 +623,30 @@ def _clean_str(val: Any) -> str:
 
 def _normalize_key(key: str) -> str:
     no_parens = re.sub(r"\([^)]*\)", "", key)
-    return re.sub(r"[^a-z0-9]+", "_", no_parens.strip().lower()).strip("_")
+    no_poss = re.sub(r"['’]s\b", "", no_parens, flags=re.IGNORECASE)
+    return re.sub(r"[^a-z0-9]+", "_", no_poss.strip().lower()).strip("_")
+
+
+def _detect_date_order(raw_key: str) -> str | None:
+    """Detect explicit date-order hint (MDY/DMY/ISO) from raw header/label text."""
+    low = raw_key.lower()
+    if "mm/dd" in low or "mm-dd" in low or "mm.dd" in low or "mdy" in low:
+        return "MDY"
+    if "dd/mm" in low or "dd-mm" in low or "dd.mm" in low or "dmy" in low:
+        return "DMY"
+    if "yyyy-mm-dd" in low or "yyyy/mm/dd" in low:
+        return "ISO"
+    return None
+
+
+def _is_clinical_date_key(norm_k: str) -> bool:
+    """Return True if a normalized key represents a clinical/visit/registration date."""
+    return (
+        norm_k == "date"
+        or norm_k.endswith("_date")
+        or norm_k.startswith(("date_", "registered", "collected", "reported", "visit_", "admission_", "discharge_"))
+        or norm_k in ("registered", "collected", "reported", "tithi", "tarikh")
+    )
 
 
 def _parse_gender(val: str) -> str | None:
@@ -498,6 +733,11 @@ def _extract_inline_ids(text: str, rec: RecordIdentity) -> None:
     for m in _RE_MRN_INLINE.finditer(ascii_text):
         _append_unique(rec.mrns, m.group(0).strip())
 
+    for m in _RE_GENERIC_MRN_INLINE.finditer(ascii_text):
+        if m.group(1) in _NON_MRN_PREFIXES:
+            continue
+        _append_unique(rec.mrns, m.group(0).strip())
+
 
 def _extract_address_details(addr_text: str, rec: RecordIdentity) -> None:
     """Extract C/O relatives, village, and PIN from an address string."""
@@ -558,7 +798,21 @@ def _extract_from_fhir(data: dict, rec: RecordIdentity) -> None:
                 val = _clean_str(ident.get("value"))
                 if val:
                     _append_unique(rec.mrns, val)
+            period = res.get("period")
+            if isinstance(period, dict):
+                for pk in ("start", "end"):
+                    pval = _clean_str(period.get(pk))
+                    if pval:
+                        _append_unique(rec.event_dates, _ascii_digits(pval))
+        elif rt in ("DiagnosticReport", "Observation"):
+            for fk in ("effectiveDateTime", "issued"):
+                fval = _clean_str(res.get(fk))
+                if fval:
+                    _append_unique(rec.event_dates, _ascii_digits(fval))
         elif rt == "DocumentReference":
+            dval = _clean_str(res.get("date"))
+            if dval:
+                _append_unique(rec.event_dates, _ascii_digits(dval))
             for content in res.get("content") or []:
                 att = content.get("attachment") or {}
                 if att.get("contentType") == "text/plain" and att.get("data"):
@@ -588,7 +842,18 @@ def _extract_fhir_patient(patient: dict, rec: RecordIdentity) -> None:
             _append_unique(rec.pan, val)
         elif "pmjay" in sys_url or "insurance" in sys_url or "policy" in sys_url:
             _append_unique(rec.insurance_ids, val)
-        elif "MR" in codes or "uhid" in sys_url or _RE_MRN_INLINE.match(val):
+        elif (
+            "MR" in codes
+            or "MRN" in codes
+            or "uhid" in sys_url
+            or "mrn" in sys_url
+            or "hospital" in sys_url
+            or _RE_MRN_INLINE.match(val)
+            or (
+                (m_gen := _RE_GENERIC_MRN_INLINE.match(val)) is not None
+                and m_gen.group(1) not in _NON_MRN_PREFIXES
+            )
+        ):
             _append_unique(rec.mrns, val)
 
     for nm in patient.get("name") or []:
@@ -656,13 +921,20 @@ def _extract_structured_dict(fields: dict, rec: RecordIdentity) -> None:
     pending_rel_type = ""
     pending_rel_name = ""
 
-    # Handle nested sub-objects used in DHH registration, OPD visits, Lab reports, and Consent forms.
-    for nested_key in ("patient", "guardian", "contact", "address", "ids"):
+    # Handle nested sub-objects across standard and unseen JSON schemas.
+    for nested_key in (
+        "patient",
+        "demographics",
+        "patient_info",
+        "guardian",
+        "contact",
+        "address",
+        "ids",
+        "identifiers",
+    ):
         sub = fields.get(nested_key)
         if isinstance(sub, dict):
-            if nested_key == "patient":
-                _extract_structured_dict(sub, rec)
-            elif nested_key == "guardian":
+            if nested_key == "guardian":
                 rel = _clean_str(sub.get("relation")) or "Guardian"
                 gname = _clean_str(sub.get("name"))
                 if gname:
@@ -725,6 +997,10 @@ def _extract_structured_dict(fields: dict, rec: RecordIdentity) -> None:
         elif canonical == "dob":
             if rec.dob is None:
                 rec.dob = _ascii_digits(val)
+            if rec.dob_date_order is None:
+                rec.dob_date_order = _detect_date_order(str(raw_k))
+        elif _is_clinical_date_key(norm_k):
+            _append_unique(rec.event_dates, _ascii_digits(val))
         elif canonical == "age":
             if rec.age is None:
                 age, g = _parse_age_sex(val)
@@ -777,6 +1053,45 @@ def _extract_structured_dict(fields: dict, rec: RecordIdentity) -> None:
         _add_relative(rec, pending_rel_type or "Guardian", pending_rel_name)
 
 
+_RE_KNOWN_LABEL_TOKEN = re.compile(
+    r"(?:^|\s)("
+    r"Patient(?:'s)?\s+Name|Date\s+of\s+Birth|Date\s+of\s+Admission|Date\s+of\s+Discharge"
+    r"|Admission\s+Date|Discharge\s+Date|Registration\s+No\.?|Father(?:'s)?\s*Name"
+    r"|Husband(?:'s)?\s*Name|Mother(?:'s)?\s*Name|Spouse\s+Name|Gram/Mohalla|Village/Mohalla"
+    r"|Age/Sex|IPD\s*No\.?|Reg\.?\s*No\.?|MRN\s*No\.?|MR\s*No\.?|ABHA\s*(?:Number|No\.?|ID)"
+    r"|Aadhaar\s*No\.?|Aadhar\s*No\.?|Contact\s*No\.?|Pin\s*Code"
+    r"|DOB(?:\s*\([^)]*\))?"
+    r"|Name|Age|Sex|Gender|Visit|Date|UHID|MRN|Mob\.?|Mobile|Phone|Contact|ABHA|Aadhaar"
+    r"|Gram|Village|Address|PIN|Attendant"
+    r"|मरीज़\s+का\s+नाम|मरीज\s+का\s+नाम|रोगी\s+का\s+नाम"
+    r"|पिता\s+का\s+नाम|पति\s+का\s+नाम|माता\s+का\s+नाम"
+    r"|पंजीकरण\s+सं\.|आईपीडी\s+सं\.|जन्म\s+तिथि"
+    r"|नाम|आयु|उम्र|लिंग|मोबाइल|फ़ोन|ग्राम|पता|तारीख|तिथि"
+    r")\s*:",
+    re.IGNORECASE,
+)
+
+
+def _split_line_segments(line: str) -> list[str]:
+    """Split multi-column, pipe-delimited, or single-space `Label: Value` lines."""
+    segments: list[str] = []
+    for chunk in re.split(r"\s{2,}|\t+|\s*\|\s*", line):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        matches = list(_RE_KNOWN_LABEL_TOKEN.finditer(chunk))
+        if len(matches) <= 1:
+            segments.append(chunk)
+            continue
+        for idx, m in enumerate(matches):
+            start = m.start(1)
+            end = matches[idx + 1].start(1) if idx + 1 < len(matches) else len(chunk)
+            seg = chunk[start:end].strip()
+            if seg:
+                segments.append(seg)
+    return segments
+
+
 def _extract_label_segments(text: str, rec: RecordIdentity) -> None:
     """Parse structured `Label: Value` segments across EN/HI discharge & Rx notes."""
     for raw_line in text.splitlines():
@@ -788,18 +1103,28 @@ def _extract_label_segments(text: str, rec: RecordIdentity) -> None:
         if line.upper().startswith("NURSING NOTES"):
             for m in _RE_MRN_INLINE.finditer(line):
                 _append_unique(rec.mrns, m.group(0))
+            for m in _RE_GENERIC_MRN_INLINE.finditer(line):
+                if m.group(1) not in _NON_MRN_PREFIXES:
+                    _append_unique(rec.mrns, m.group(0))
 
-        # Split multi-column text lines separated by 2+ spaces or tabs.
-        for seg in _RE_LINE_SPLIT.split(line):
-            seg = seg.strip()
+        for seg in _split_line_segments(line):
             if ":" not in seg:
                 continue
             label, val = (p.strip() for p in seg.split(":", 1))
             if not val:
                 continue
-            low = label.lower()
+            label_order = _detect_date_order(label)
+            low = re.sub(r"\s*\([^)]*\)", "", label).strip().lower()
+            low_no_poss = re.sub(r"['’]s\b", "", low)
 
-            if low in ("patient name", "name", "मरीज़ का नाम", "मरीज का नाम", "रोगी का नाम", "नाम"):
+            if low_no_poss in (
+                "patient name",
+                "name",
+                "मरीज़ का नाम",
+                "मरीज का नाम",
+                "रोगी का नाम",
+                "नाम",
+            ):
                 _add_name(rec, val)
             elif low in ("age/sex", "age", "आयु", "उम्र"):
                 age, g = _parse_age_sex(val)
@@ -807,24 +1132,68 @@ def _extract_label_segments(text: str, rec: RecordIdentity) -> None:
                     rec.age = age
                 if rec.gender is None and g is not None:
                     rec.gender = g
-            elif low in ("uhid", "ipd no", "reg no", "reg. no", "mrn", "पंजीकरण सं.", "आईपीडी सं."):
+            elif low in ("sex", "gender", "लिंग"):
+                if rec.gender is None:
+                    rec.gender = _parse_gender(val)
+            elif low in (
+                "uhid",
+                "ipd no",
+                "reg no",
+                "reg. no",
+                "registration no",
+                "mrn",
+                "mrn no",
+                "mr no",
+                "पंजीकरण सं.",
+                "आईपीडी सं.",
+            ):
                 _append_unique(rec.mrns, val)
-            elif low in ("mobile", "mob", "mob.", "phone", "मोबाइल", "फ़ोन"):
+            elif low in (
+                "mobile",
+                "mob",
+                "mob.",
+                "phone",
+                "contact",
+                "contact no",
+                "contact no.",
+                "मोबाइल",
+                "फ़ोन",
+            ):
                 _append_unique(rec.phones, _ascii_digits(val))
-            elif low in ("abha no", "abha", "abha number"):
+            elif low in ("abha no", "abha", "abha number", "abha id"):
                 _append_unique(rec.abha, _ascii_digits(val))
+            elif low in ("aadhaar", "aadhaar no", "aadhar", "aadhar no"):
+                _append_unique(rec.aadhaar, _ascii_digits(val))
             elif low in ("dob", "date of birth", "जन्म तिथि"):
                 if rec.dob is None:
                     rec.dob = _ascii_digits(val)
-            elif low in ("पिता का नाम",):
+                if rec.dob_date_order is None and label_order is not None:
+                    rec.dob_date_order = label_order
+            elif low in (
+                "visit",
+                "date",
+                "date of admission",
+                "date of discharge",
+                "admission date",
+                "discharge date",
+                "तारीख",
+                "तिथि",
+            ):
+                _append_unique(rec.event_dates, _ascii_digits(val))
+            elif low_no_poss in ("पिता का नाम", "father name", "father"):
                 _add_relative(rec, "Father", val)
-            elif low in ("पति का नाम",):
+            elif low_no_poss in ("पति का नाम", "husband name", "husband", "spouse name"):
                 _add_relative(rec, "W/o", val)
-            elif low in ("माता का नाम",):
+            elif low_no_poss in ("माता का नाम", "mother name", "mother"):
                 _add_relative(rec, "Mother", val)
-            elif low in ("gram", "village", "ग्राम"):
+            elif low in ("gram", "village", "gram/mohalla", "village/mohalla", "ग्राम"):
                 if rec.village is None:
                     rec.village = val
+            elif low in ("pin", "pin code", "pincode"):
+                if rec.pin is None:
+                    digits = re.sub(r"\D", "", _ascii_digits(val))
+                    if len(digits) == 6:
+                        rec.pin = digits
             elif low in ("address", "पता"):
                 _extract_address_details(val, rec)
             elif low == "attendant":
@@ -848,6 +1217,14 @@ def _extract_from_text(text: str, rec: RecordIdentity) -> None:
             # Avoid clinical "C/O fever" false positives in unstructured text.
             continue
         _add_relative(rec, rel, rname)
+
+    for m in _RE_HINDI_REL_LEAD.finditer(text):
+        if ":" not in m.group(1):
+            _add_name(rec, m.group(1))
+        _add_relative(rec, m.group(2), m.group(3))
+
+    for m in _RE_HINDI_REL_INLINE.finditer(text):
+        _add_relative(rec, m.group(1), m.group(2))
 
     for m in _RE_DISCHARGE_NOTE_LEAD.finditer(text):
         _add_name(rec, m.group(1))
@@ -884,25 +1261,75 @@ def _safe_b64_text(data: str) -> str:
         return ""
 
 
+_FACILITY_HINT_KEYWORDS = (
+    "hospital",
+    "clinic",
+    "medical",
+    "centre",
+    "center",
+    "sadan",
+    "charitable",
+    "multispeciality",
+    "multispecialty",
+    "institute",
+    "nursing home",
+    "ओपीडी पर्चा",
+)
+
+
+def _slugify_hospital(name: str) -> str | None:
+    """Normalize a hospital/facility name string into a canonical lowercase slug."""
+    cleaned = _clean_str(name)
+    if not cleaned:
+        return None
+    head = re.split(r"\s+-\s+|,", cleaned, maxsplit=1)[0]
+    tokens = [t for t in re.findall(r"[a-z0-9]+", head.lower()) if t]
+    core = [t for t in tokens if t not in _FACILITY_GENERIC_WORDS and not t.isdigit()]
+    chosen = core if core else [t for t in tokens if not t.isdigit()]
+    slug = "".join(chosen)
+    return slug if len(slug) >= 3 else None
+
+
+def _facility_from_relpath(relpath: str) -> str | None:
+    """Extract leading non-generic facility prefix from a filename stem."""
+    stem = relpath.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    tokens = re.findall(r"[a-z0-9]+", stem.lower())
+    prefix_toks: list[str] = []
+    for tok in tokens:
+        if tok in _GENERIC_PATH_TOKENS or tok in _FACILITY_GENERIC_WORDS or tok.isdigit():
+            break
+        if len(tok) >= 6 and re.fullmatch(r"[0-9a-f]+", tok) and any(c.isdigit() for c in tok):
+            break
+        prefix_toks.append(tok)
+    slug = "".join(prefix_toks)
+    return slug if len(slug) >= 3 else None
+
+
 def _infer_hospital_hint(
     relpath: str, raw_fields: dict, raw_text: str, mrns: list[str]
 ) -> str | None:
-    """Infer hospital identifier hint from path, metadata, MRN prefixes, or text header."""
+    """Infer hospital identifier hint from metadata, facility banner, MRN prefixes, or path."""
     sources: list[str] = [relpath]
+    explicit_facilities: list[str] = []
     if isinstance(raw_fields, dict):
         meta = raw_fields.get("_export_meta")
         if isinstance(meta, dict) and meta.get("hospital"):
             sources.append(str(meta["hospital"]))
+            explicit_facilities.append(str(meta["hospital"]))
         fac = raw_fields.get("facility")
         if isinstance(fac, dict) and fac.get("name"):
             sources.append(str(fac["name"]))
-        if raw_fields.get("_hospital"):
-            sources.append(str(raw_fields["_hospital"]))
+            explicit_facilities.append(str(fac["name"]))
+        for fkey in ("_hospital", "hospital", "hospital_name"):
+            if raw_fields.get(fkey):
+                sources.append(str(raw_fields[fkey]))
+                explicit_facilities.append(str(raw_fields[fkey]))
         if raw_fields.get("resourceType") == "Bundle":
             for e in raw_fields.get("entry") or []:
                 res = (e or {}).get("resource") or {}
                 if res.get("resourceType") == "Organization" and res.get("name"):
                     sources.append(str(res["name"]))
+                    explicit_facilities.append(str(res["name"]))
     sources.extend(mrns)
     if raw_text:
         sources.append("\n".join(raw_text.splitlines()[:4]))
@@ -912,8 +1339,32 @@ def _infer_hospital_hint(
         if marker in blob:
             return hint
 
+    for fac_name in explicit_facilities:
+        slug = _slugify_hospital(fac_name)
+        if slug:
+            return slug
+
+    if raw_text:
+        for line in raw_text.splitlines()[:4]:
+            low_line = line.strip().lower()
+            if not low_line or ":" in low_line:
+                continue
+            if any(kw in low_line for kw in _FACILITY_HINT_KEYWORDS):
+                slug = _slugify_hospital(line)
+                if slug:
+                    return slug
+
+    path_slug = _facility_from_relpath(relpath)
+    if path_slug:
+        return path_slug
+
     if isinstance(raw_fields, dict) and raw_fields.get("lab"):
-        return _clean_str(raw_fields["lab"]) or None
+        return _slugify_hospital(str(raw_fields["lab"])) or (_clean_str(raw_fields["lab"]) or None)
+
+    for m in mrns:
+        pm = re.match(r"^([A-Z]{2,5})[-/]", m.strip().upper())
+        if pm and pm.group(1) not in _GENERIC_MRN_PREFIXES:
+            return pm.group(1).lower()
     return None
 
 
@@ -1092,28 +1543,50 @@ _CLINICAL_TRAP_WORDS = frozenset(
         "hypertension",
         "disease",
         "addison",
+        "parkinson",
+        "crohn",
+        "cushing",
+        "alzheimer",
+        "hodgkin",
+        "graves",
+        "kawasaki",
+        "meniere",
+        "syndrome",
         "typhoid",
         "malaria",
         "dengue",
         "k/c/o",
+        "c/o",
+        "h/o",
     }
 )
 
 _REL_CANON_MAP: dict[str, str] = {
     "s/o": "S/o",
     "son of": "S/o",
+    "son": "S/o",
+    "पुत्र": "S/o",
     "d/o": "D/o",
     "daughter of": "D/o",
+    "daughter": "D/o",
+    "पुत्री": "D/o",
     "w/o": "W/o",
     "wife of": "W/o",
+    "wife": "W/o",
     "husband": "W/o",
+    "spouse": "W/o",
+    "पत्नी": "W/o",
+    "पति": "W/o",
     "c/o": "C/o",
     "care of": "C/o",
     "father": "Father",
+    "पिता": "Father",
     "mother": "Mother",
+    "माता": "Mother",
     "attendant": "Attendant",
     "relative": "Guardian",
     "guardian": "Guardian",
+    "s/o / w/o": "Guardian",
 }
 
 
@@ -1136,6 +1609,7 @@ class NormalizedIdentity:
     gender: str | None = None
     norm_village: str | None = None
     norm_pin: str | None = None
+    event_month_days: set[tuple[int, int]] = field(default_factory=set)
 
 
 def _is_deva_letter(ch: str) -> bool:
@@ -1314,34 +1788,94 @@ def normalize_phone(raw: str) -> str | None:
     return None
 
 
-def normalize_dob(raw: str | None, hospital_hint: str | None = None) -> str | None:
-    """Parse DD/MM/YYYY, MM/DD/YYYY, or YYYY-MM-DD DOB strings into YYYY-MM-DD."""
+def normalize_dob(
+    raw: str | None,
+    hospital_hint: str | None = None,
+    date_order: str | None = None,
+) -> str | None:
+    """Parse DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, or textual month DOB strings into YYYY-MM-DD."""
+    del hospital_hint
     if not raw:
         return None
     s = _ascii_digits(raw).strip()
     if not s:
         return None
 
-    m_iso = re.fullmatch(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", s)
+    m_iso = re.match(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:$|T|\s)", s)
     if m_iso:
         y, m, d = int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))
-        try:
-            return dt.date(y, m, d).isoformat()
-        except ValueError:
-            return None
+        if 1900 <= y <= 2035:
+            try:
+                return dt.date(y, m, d).isoformat()
+            except ValueError:
+                return None
+
+    # Textual month dates: "12 Apr 1977", "5 September 2026", "05-Sep-1986"
+    m_dmy_txt = re.fullmatch(r"(\d{1,2})[\s,/-]+([A-Za-z]+)[\s,/-]+(\d{4})", s)
+    if m_dmy_txt:
+        d = int(m_dmy_txt.group(1))
+        mon = _MONTH_MAP.get(m_dmy_txt.group(2).lower())
+        y = int(m_dmy_txt.group(3))
+        if mon and 1900 <= y <= 2035:
+            try:
+                return dt.date(y, mon, d).isoformat()
+            except ValueError:
+                return None
+
+    # Textual month-first dates: "Apr 12, 1977", "September 5, 2026"
+    m_mdy_txt = re.fullmatch(r"([A-Za-z]+)[\s,/-]+(\d{1,2})[\s,/-]+(\d{4})", s)
+    if m_mdy_txt:
+        mon = _MONTH_MAP.get(m_mdy_txt.group(1).lower())
+        d = int(m_mdy_txt.group(2))
+        y = int(m_mdy_txt.group(3))
+        if mon and 1900 <= y <= 2035:
+            try:
+                return dt.date(y, mon, d).isoformat()
+            except ValueError:
+                return None
 
     m_num = re.fullmatch(r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})", s)
     if m_num:
         p1, p2, y = int(m_num.group(1)), int(m_num.group(2)), int(m_num.group(3))
-        if not (1900 <= y <= 2030):
+        if not (1900 <= y <= 2035):
             return None
-        # Arogya legacy/discharge exports use MM/DD/YYYY; other facilities use DD/MM/YYYY.
-        order = ((p1, p2), (p2, p1)) if hospital_hint == "arogya" else ((p2, p1), (p1, p2))
+        order = ((p1, p2), (p2, p1)) if date_order == "MDY" else ((p2, p1), (p1, p2))
         for month, day in order:
             try:
                 return dt.date(y, month, day).isoformat()
             except ValueError:
                 continue
+    return None
+
+
+def _extract_month_day(raw: str | None, date_order: str | None = None) -> tuple[int, int] | None:
+    """Extract (month, day) from full dates or partial '5 September' / 'Apr 23' text."""
+    if not raw:
+        return None
+    iso = normalize_dob(raw, date_order=date_order)
+    if iso is not None:
+        return (int(iso[5:7]), int(iso[8:10]))
+    s = _ascii_digits(raw).strip()
+    m_dm = re.fullmatch(r"(\d{1,2})[\s,/-]+([A-Za-z]+)", s)
+    if m_dm:
+        d = int(m_dm.group(1))
+        mon = _MONTH_MAP.get(m_dm.group(2).lower())
+        if mon:
+            try:
+                dt.date(2000, mon, d)
+                return (mon, d)
+            except ValueError:
+                return None
+    m_md = re.fullmatch(r"([A-Za-z]+)[\s,/-]+(\d{1,2})", s)
+    if m_md:
+        mon = _MONTH_MAP.get(m_md.group(1).lower())
+        d = int(m_md.group(2))
+        if mon:
+            try:
+                dt.date(2000, mon, d)
+                return (mon, d)
+            except ValueError:
+                return None
     return None
 
 
@@ -1408,8 +1942,9 @@ def _normalize_strong_ids(rec: RecordIdentity) -> set[tuple[str, str]]:
         if not cand:
             continue
         # Preserve hospital prefix (SNJ/26/..., JJH-..., etc.); scope bare numeric MRNs.
-        if not re.search(r"[A-Z]", cand) and rec.hospital_hint:
-            cand = f"{rec.hospital_hint.upper()}:{cand}"
+        if not re.search(r"[A-Z]", cand):
+            scope = rec.hospital_hint.upper() if rec.hospital_hint else f"FILE:{rec.relpath.upper()}"
+            cand = f"{scope}:{cand}"
         strong.add(("mrn", cand))
 
     return strong
@@ -1433,7 +1968,10 @@ def _normalize_relatives(relatives: list[tuple[str, str]]) -> list[tuple[str, st
     return out
 
 
-def normalize_identity(rec: RecordIdentity) -> NormalizedIdentity:
+def normalize_identity(
+    rec: RecordIdentity,
+    dob_order_override: str | None = None,
+) -> NormalizedIdentity:
     """Canonicalize all extracted raw attributes of a RecordIdentity."""
     norm_names: list[str] = []
     name_tokens: list[list[str]] = []
@@ -1465,6 +2003,13 @@ def normalize_identity(rec: RecordIdentity) -> NormalizedIdentity:
         if ne and ne not in norm_emails:
             norm_emails.append(ne)
 
+    effective_order = rec.dob_date_order or dob_order_override
+    event_month_days: set[tuple[int, int]] = set()
+    for ed in rec.event_dates:
+        md = _extract_month_day(ed, date_order=effective_order)
+        if md is not None:
+            event_month_days.add(md)
+
     return NormalizedIdentity(
         relpath=rec.relpath,
         loc=rec.loc,
@@ -1476,11 +2021,12 @@ def normalize_identity(rec: RecordIdentity) -> NormalizedIdentity:
         norm_phones=norm_phones,
         norm_emails=norm_emails,
         strong_ids=_normalize_strong_ids(rec),
-        dob_iso=normalize_dob(rec.dob, rec.hospital_hint),
+        dob_iso=normalize_dob(rec.dob, rec.hospital_hint, date_order=effective_order),
         age_approx=rec.age,
         gender=normalize_gender(rec.gender),
         norm_village=normalize_village(rec.village),
         norm_pin=normalize_pin(rec.pin),
+        event_month_days=event_month_days,
     )
 
 
@@ -1501,6 +2047,265 @@ _STRICT_REL_TYPES = frozenset({"S/o", "D/o", "W/o", "C/o", "Father", "Mother"})
 def _mrn_series(mrn: str) -> str:
     """Extract hospital MRN series prefix (e.g. 'SNJ/26/', 'IPD-2026-', 'JJH-')."""
     return re.sub(r"\d+$", "", mrn)
+
+
+def _is_specific_mrn_series(series: str) -> bool:
+    """Return True when series starts with a non-generic hospital code (e.g. SNJ/, JJH-, CCH/)."""
+    m = re.match(r"^([A-Z]{2,5})[-/]", series.upper())
+    return bool(m and m.group(1) not in _GENERIC_MRN_PREFIXES)
+
+
+def _canonical_mrn(mrn: str, mrn_equiv: dict[str, str] | None) -> str:
+    return mrn_equiv.get(mrn, mrn) if mrn_equiv else mrn
+
+
+def _infer_date_orders(records: list[RecordIdentity]) -> list[str | None]:
+    """Infer file/column MDY vs DMY date order across records when dates are ambiguous."""
+    dob_votes: dict[str, list[int]] = defaultdict(lambda: [0, 0])  # [mdy, dmy]
+    ev_votes: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    hdr_votes: dict[str, set[str]] = defaultdict(set)
+
+    def _vote_num_date(raw: str, counts: list[int]) -> None:
+        m = re.fullmatch(r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})", _ascii_digits(raw).strip())
+        if not m:
+            return
+        p1, p2 = int(m.group(1)), int(m.group(2))
+        if p2 > 12 and 1 <= p1 <= 12:
+            counts[0] += 1
+        elif p1 > 12 and 1 <= p2 <= 12:
+            counts[1] += 1
+
+    for rec in records:
+        if rec.dob_date_order in ("MDY", "DMY"):
+            hdr_votes[rec.relpath].add(rec.dob_date_order)
+        if rec.dob:
+            _vote_num_date(rec.dob, dob_votes[rec.relpath])
+        for ed in rec.event_dates:
+            _vote_num_date(ed, ev_votes[rec.relpath])
+
+    file_order: dict[str, str | None] = {}
+    hosp_votes: dict[str, set[str]] = defaultdict(set)
+    for rec in records:
+        rel = rec.relpath
+        if rel not in file_order:
+            order: str | None = None
+            hv = hdr_votes.get(rel)
+            if hv and len(hv) == 1:
+                order = next(iter(hv))
+            else:
+                d_mdy, d_dmy = dob_votes[rel]
+                if d_mdy > 0 and d_dmy == 0:
+                    order = "MDY"
+                elif d_dmy > 0 and d_mdy == 0:
+                    order = "DMY"
+                else:
+                    e_mdy, e_dmy = ev_votes[rel]
+                    if e_mdy > 0 and e_dmy == 0:
+                        order = "MDY"
+                    elif e_dmy > 0 and e_mdy == 0:
+                        order = "DMY"
+            file_order[rel] = order
+        resolved = file_order[rel]
+        if resolved and rec.hospital_hint:
+            hosp_votes[rec.hospital_hint].add(resolved)
+
+    out: list[str | None] = []
+    for rec in records:
+        order = rec.dob_date_order or file_order.get(rec.relpath)
+        if order is None and rec.hospital_hint:
+            hv = hosp_votes.get(rec.hospital_hint)
+            if hv and len(hv) == 1:
+                order = next(iter(hv))
+        out.append(order)
+    return out
+
+
+def _build_mrn_equiv(
+    norms: list[NormalizedIdentity],
+    candidate_pairs: list[tuple[int, int]],
+) -> dict[str, str]:
+    """Infer equivalent same-series MRNs proven via Aadhaar/ABHA/PAN or DOB+phone+relative."""
+    equiv_pairs: list[tuple[str, str]] = []
+    for i, j in candidate_pairs:
+        a, b = norms[i], norms[j]
+        if has_hard_conflict(a, b):
+            continue
+        if _name_match_score(a, b) < 25.0:
+            continue
+        ids_a = _ids_by_type(a)
+        ids_b = _ids_by_type(b)
+        mrns_a = ids_a.get("mrn", set())
+        mrns_b = ids_b.get("mrn", set())
+        if not mrns_a or not mrns_b:
+            continue
+
+        has_national = any(
+            ids_a.get(t, set()) & ids_b.get(t, set()) for t in _NATIONAL_ID_TYPES
+        )
+        same_triple = (
+            bool(a.dob_iso and b.dob_iso and a.dob_iso == b.dob_iso)
+            and bool(set(a.norm_phones) & set(b.norm_phones))
+            and _has_compatible_relative_pair(a.norm_relatives, b.norm_relatives)
+        )
+        if not (has_national or same_triple):
+            continue
+
+        same_hosp = bool(a.hospital_hint and b.hospital_hint and a.hospital_hint == b.hospital_hint)
+        for ma in mrns_a:
+            sa = _mrn_series(ma)
+            for mb in mrns_b:
+                if ma == mb:
+                    continue
+                if sa == _mrn_series(mb) and (same_hosp or _is_specific_mrn_series(sa)):
+                    equiv_pairs.append((ma, mb))
+
+    if not equiv_pairs:
+        return {}
+
+    parent: dict[str, str] = {}
+
+    def find_m(m: str) -> str:
+        parent.setdefault(m, m)
+        while parent[m] != m:
+            parent[m] = parent[parent[m]]
+            m = parent[m]
+        return m
+
+    for ma, mb in equiv_pairs:
+        ra, rb = find_m(ma), find_m(mb)
+        if ra != rb:
+            if rb < ra:
+                ra, rb = rb, ra
+            parent[rb] = ra
+
+    return {m: find_m(m) for m in parent}
+
+
+_PASS2_REL_TYPES = frozenset({"S/o", "D/o", "W/o", "Father", "Mother"})
+
+
+def _pass2_relations_compatible(ra: str, rb: str) -> bool:
+    if ra not in _PASS2_REL_TYPES or rb not in _PASS2_REL_TYPES:
+        return False
+    if ra == rb:
+        return True
+    return (
+        {ra, rb} <= {"S/o", "Father"}
+        or {ra, rb} <= {"D/o", "Father"}
+        or {ra, rb} <= {"S/o", "Mother"}
+        or {ra, rb} <= {"D/o", "Mother"}
+    )
+
+
+def _strict_same_relation_match(
+    rels_a: list[tuple[str, str]],
+    rels_b: list[tuple[str, str]],
+) -> bool:
+    for ra, na in rels_a:
+        for rb, nb in rels_b:
+            if _pass2_relations_compatible(ra, rb) and _relative_names_compatible(na, nb):
+                return True
+    return False
+
+
+def _token_name_overlap(a: NormalizedIdentity, b: NormalizedIdentity) -> bool:
+    skels_a = {_token_phonetic_skeleton(t) for toks in a.name_tokens for t in toks}
+    skels_b = {_token_phonetic_skeleton(t) for toks in b.name_tokens for t in toks}
+    skels_a.discard("")
+    skels_b.discard("")
+    return bool(skels_a & skels_b)
+
+
+def _find_unique_pass2_merges(
+    norms: list[NormalizedIdentity],
+    members: dict[int, list[int]],
+    find_fn: Callable[[int], int],
+    pair_conflicts: Callable[[int, int], bool],
+) -> list[tuple[int, int]]:
+    """Link sparse singletons ONLY when matching exactly 1 anchored cluster without conflict."""
+    anchored_roots = [
+        root
+        for root, idxs in sorted(members.items())
+        if len(idxs) >= 2
+        or bool(
+            norms[idxs[0]].strong_ids
+            or norms[idxs[0]].norm_phones
+            or norms[idxs[0]].dob_iso
+        )
+    ]
+    if not anchored_roots:
+        return []
+
+    cluster_month_days: dict[int, set[tuple[int, int]]] = {}
+    for root in anchored_roots:
+        mds: set[tuple[int, int]] = set()
+        for idx in members[root]:
+            mds.update(norms[idx].event_month_days)
+        cluster_month_days[root] = mds
+
+    sparse_singletons = [
+        idxs[0]
+        for idxs in members.values()
+        if len(idxs) == 1
+        and not norms[idxs[0]].strong_ids
+        and not norms[idxs[0]].norm_phones
+        and norms[idxs[0]].dob_iso is None
+    ]
+    sparse_singletons.sort(key=lambda idx: (norms[idx].relpath, norms[idx].loc))
+
+    merges: list[tuple[int, int]] = []
+    for s_idx in sparse_singletons:
+        s = norms[s_idx]
+
+        # Pass 2a: unique (full_name + village + age <= 2)
+        if any(len(t) >= 2 for t in s.name_tokens) and s.norm_village and s.age_approx is not None:
+            s_vil = phonetic_skeleton(s.norm_village)
+            matched_roots: list[int] = []
+            for root in anchored_roots:
+                if find_fn(root) == find_fn(s_idx):
+                    continue
+                if any(pair_conflicts(s_idx, m_idx) for m_idx in members[root]):
+                    continue
+                for m_idx in members[root]:
+                    m = norms[m_idx]
+                    if (
+                        _name_match_score(s, m) >= 25.0
+                        and m.norm_village
+                        and phonetic_skeleton(m.norm_village) == s_vil
+                        and m.age_approx is not None
+                        and abs(s.age_approx - m.age_approx) <= 2
+                    ):
+                        matched_roots.append(root)
+                        break
+            if len(matched_roots) == 1:
+                merges.append((s_idx, matched_roots[0]))
+                continue
+
+        # Pass 2b: unique (name_token + same-relation relative + optional Visit day/month)
+        if s.norm_names and any(rel in _PASS2_REL_TYPES for rel, _ in s.norm_relatives):
+            matched_roots = []
+            for root in anchored_roots:
+                if find_fn(root) == find_fn(s_idx):
+                    continue
+                if any(pair_conflicts(s_idx, m_idx) for m_idx in members[root]):
+                    continue
+                for m_idx in members[root]:
+                    m = norms[m_idx]
+                    if _token_name_overlap(s, m) and _strict_same_relation_match(
+                        s.norm_relatives, m.norm_relatives
+                    ):
+                        matched_roots.append(root)
+                        break
+            if len(matched_roots) > 1 and s.event_month_days:
+                date_filtered = [
+                    r for r in matched_roots if s.event_month_days & cluster_month_days[r]
+                ]
+                if len(date_filtered) == 1:
+                    matched_roots = date_filtered
+            if len(matched_roots) == 1:
+                merges.append((s_idx, matched_roots[0]))
+
+    return merges
 
 
 def _ids_by_type(norm: NormalizedIdentity) -> dict[str, set[str]]:
@@ -1536,7 +2341,10 @@ def _has_compatible_relative_pair(
     return False
 
 
-def generate_candidate_pairs(norms: list[NormalizedIdentity]) -> list[tuple[int, int]]:
+def generate_candidate_pairs(
+    norms: list[NormalizedIdentity],
+    mrn_equiv: dict[str, str] | None = None,
+) -> list[tuple[int, int]]:
     """Build inverted-index blocking buckets and return unique sorted index pairs."""
     phone_counts: Counter[str] = Counter()
     for norm in norms:
@@ -1548,7 +2356,8 @@ def generate_candidate_pairs(norms: list[NormalizedIdentity]) -> list[tuple[int,
     for idx, norm in enumerate(norms):
         # 1. Strong ID buckets (ABHA, Aadhaar, PAN, Insurance, hospital-scoped MRN)
         for id_type, val in norm.strong_ids:
-            buckets[("id", id_type, val)].append(idx)
+            canon = _canonical_mrn(val, mrn_equiv) if id_type == "mrn" else val
+            buckets[("id", id_type, canon)].append(idx)
 
         # 2. Phone bucket (skip shared hospital helplines appearing >25 times)
         for ph in norm.norm_phones:
@@ -1595,7 +2404,11 @@ def generate_candidate_pairs(norms: list[NormalizedIdentity]) -> list[tuple[int,
     return sorted(pairs)
 
 
-def has_hard_conflict(a: NormalizedIdentity, b: NormalizedIdentity) -> bool:
+def has_hard_conflict(
+    a: NormalizedIdentity,
+    b: NormalizedIdentity,
+    mrn_equiv: dict[str, str] | None = None,
+) -> bool:
     """Return True if two records contain mutually incompatible identity evidence."""
     ids_a = _ids_by_type(a)
     ids_b = _ids_by_type(b)
@@ -1639,29 +2452,33 @@ def has_hard_conflict(a: NormalizedIdentity, b: NormalizedIdentity) -> bool:
         ):
             return True
 
-    # 6. Same-hospital, same-series MRN mismatch (allow OPD vs IPD series, and allow
-    # explicitly corroborated "old card merged" duplicates).
-    if a.hospital_hint and b.hospital_hint and a.hospital_hint == b.hospital_hint:
-        mrns_a = ids_a.get("mrn", set())
-        mrns_b = ids_b.get("mrn", set())
-        if mrns_a and mrns_b:
-            series_a: dict[str, set[str]] = defaultdict(set)
-            series_b: dict[str, set[str]] = defaultdict(set)
-            for m in mrns_a:
-                series_a[_mrn_series(m)].add(m)
-            for m in mrns_b:
-                series_b[_mrn_series(m)].add(m)
+    # 6. Same-hospital, same-series MRN mismatch (allow OPD vs IPD series, proven
+    # equivalent re-registered MRNs, and explicit national-ID or full-triple matches).
+    same_hosp = bool(a.hospital_hint and b.hospital_hint and a.hospital_hint == b.hospital_hint)
+    mrns_a = ids_a.get("mrn", set())
+    mrns_b = ids_b.get("mrn", set())
+    if mrns_a and mrns_b:
+        series_a: dict[str, set[str]] = defaultdict(set)
+        series_b: dict[str, set[str]] = defaultdict(set)
+        for m in mrns_a:
+            series_a[_mrn_series(m)].add(m)
+        for m in mrns_b:
+            series_b[_mrn_series(m)].add(m)
 
-            common_series = set(series_a) & set(series_b)
-            for series in common_series:
-                if not (series_a[series] & series_b[series]):
-                    same_triple = (
-                        bool(a.dob_iso and b.dob_iso and a.dob_iso == b.dob_iso)
-                        and bool(set(a.norm_phones) & set(b.norm_phones))
-                        and _has_compatible_relative_pair(a.norm_relatives, b.norm_relatives)
-                    )
-                    if not (has_national_match or same_triple):
-                        return True
+        common_series = set(series_a) & set(series_b)
+        for series in common_series:
+            if not (same_hosp or _is_specific_mrn_series(series)):
+                continue
+            canon_a = {_canonical_mrn(m, mrn_equiv) for m in series_a[series]}
+            canon_b = {_canonical_mrn(m, mrn_equiv) for m in series_b[series]}
+            if not (canon_a & canon_b):
+                same_triple = (
+                    bool(a.dob_iso and b.dob_iso and a.dob_iso == b.dob_iso)
+                    and bool(set(a.norm_phones) & set(b.norm_phones))
+                    and _has_compatible_relative_pair(a.norm_relatives, b.norm_relatives)
+                )
+                if not (has_national_match or same_triple):
+                    return True
 
     return False
 
@@ -1701,9 +2518,13 @@ def _name_match_score(a: NormalizedIdentity, b: NormalizedIdentity) -> float:
     return 0.0
 
 
-def score_pair(a: NormalizedIdentity, b: NormalizedIdentity) -> float:
+def score_pair(
+    a: NormalizedIdentity,
+    b: NormalizedIdentity,
+    mrn_equiv: dict[str, str] | None = None,
+) -> float:
     """Score identity compatibility between two normalized records (-inf on hard conflict)."""
-    if has_hard_conflict(a, b):
+    if has_hard_conflict(a, b, mrn_equiv=mrn_equiv):
         return float("-inf")
 
     score = 0.0
@@ -1714,8 +2535,10 @@ def score_pair(a: NormalizedIdentity, b: NormalizedIdentity) -> float:
     if any(ids_a.get(t, set()) & ids_b.get(t, set()) for t in _STRONG_ANCHOR_TYPES):
         score += 50.0
 
-    # +45: exact hospital-scoped MRN match
-    if ids_a.get("mrn", set()) & ids_b.get("mrn", set()):
+    # +45: exact (or verified-equivalent) hospital-scoped MRN match
+    canon_mrns_a = {_canonical_mrn(m, mrn_equiv) for m in ids_a.get("mrn", set())}
+    canon_mrns_b = {_canonical_mrn(m, mrn_equiv) for m in ids_b.get("mrn", set())}
+    if canon_mrns_a & canon_mrns_b:
         score += 45.0
 
     # +30: exact 10-digit phone match

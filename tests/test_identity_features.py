@@ -159,7 +159,7 @@ def test_candidate_pairs_aggregate_statistics():
     records = sanj + jjh + dhh + arogya
 
     # Load ground truth labels
-    with open(dev_dir / "truth/truth.json") as f:
+    with open(dev_dir / "truth/truth.json", encoding="utf-8") as f:
         truth = json.load(f)
 
     loc_to_patient = {

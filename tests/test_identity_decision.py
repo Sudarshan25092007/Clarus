@@ -48,7 +48,7 @@ def test_dev_candidate_decisions():
         + extract_arogya_legacy_csv(dev_dir / "input/registration/arogya_legacy_export.csv")
     )
 
-    with open(dev_dir / "truth/truth.json") as f:
+    with open(dev_dir / "truth/truth.json", encoding="utf-8") as f:
         truth = json.load(f)
 
     loc_to_patient = {

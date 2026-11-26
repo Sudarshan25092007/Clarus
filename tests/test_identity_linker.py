@@ -152,7 +152,7 @@ def test_registration_recall():
     max_possible_pairs = n_records * (n_records - 1) // 2
 
     # Map records to ground truth patient IDs
-    with open(dev_dir / "truth/truth.json") as f:
+    with open(dev_dir / "truth/truth.json", encoding="utf-8") as f:
         truth = json.load(f)
 
     loc_to_patient = {
