@@ -32,6 +32,8 @@ import sys
 import time
 from pathlib import Path
 
+from identity_pipeline import build_pseudonym_map
+
 # --------------------------------------------------------------------------- policy
 def load_policy(path: Path) -> dict:
     """Tiny `key: value` reader for config/policy.yaml (no PyYAML needed)."""
@@ -46,11 +48,6 @@ def load_policy(path: Path) -> dict:
 
 
 HERE = Path(__file__).resolve().parent
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
-
-from identity_pipeline import build_pseudonym_map
-
 POLICY = load_policy(HERE / "config" / "policy.yaml")
 SECRET = os.environ.get("RAKSHA_SECRET", "").encode()  # never print or write this
 
@@ -161,7 +158,7 @@ def decode(raw: bytes) -> str | None:
     return None
 
 
-def process_csv(text: str, delimiter: str, rel: str, records: list, psn_map: dict | None = None) -> str:
+def process_csv(text: str, delimiter: str, rel: str, records: list, psn_map: dict) -> str:
     rows = list(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter))
     if not rows:
         return ""
@@ -171,8 +168,7 @@ def process_csv(text: str, delimiter: str, rel: str, records: list, psn_map: dic
     w.writerow(header)  # TODO(team): rename a header only if it contains PII
     for i, row in enumerate(body):
         loc = f"row:{i}"
-        pid = psn_map.get((rel, loc)) if psn_map else None
-        # TODO(team): write pid into the row's patient column so it appears INSIDE the record
+        pid = psn_map.get((rel, loc))
         w.writerow([clean_text(c) for c in row])
         records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
         Stats.records += 1
@@ -180,13 +176,13 @@ def process_csv(text: str, delimiter: str, rel: str, records: list, psn_map: dic
     return buf.getvalue()
 
 
-def process_json(text: str, rel: str, records: list, psn_map: dict | None = None) -> str:
+def process_json(text: str, rel: str, records: list, psn_map: dict) -> str:
     data = json.loads(text)
     is_doc = not isinstance(data, dict) or data.get("resourceType") == "Bundle" or not any(
         isinstance(v, list) and v and all(isinstance(x, dict) for x in v) for v in data.values())
     if is_doc:  # FHIR Bundle or single object: one record for the whole file
         loc = "doc"
-        pid = psn_map.get((rel, loc)) if psn_map else None
+        pid = psn_map.get((rel, loc))
         records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
         Stats.records += 1
         Stats.linked += pid is not None
@@ -196,7 +192,7 @@ def process_json(text: str, rel: str, records: list, psn_map: dict | None = None
                 for i, _ in enumerate(v):
                     pointer_key = k.replace("~", "~0").replace("/", "~1")
                     loc = f"/{pointer_key}/{i}"
-                    pid = psn_map.get((rel, loc)) if psn_map else None
+                    pid = psn_map.get((rel, loc))
                     records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
                     Stats.records += 1
                     Stats.linked += pid is not None
@@ -204,9 +200,9 @@ def process_json(text: str, rel: str, records: list, psn_map: dict | None = None
     return json.dumps(clean_value(data), ensure_ascii=False, indent=2) + "\n"
 
 
-def process_text(text: str, rel: str, records: list, psn_map: dict | None = None) -> str:
+def process_text(text: str, rel: str, records: list, psn_map: dict) -> str:
     loc = "doc"
-    pid = psn_map.get((rel, loc)) if psn_map else None
+    pid = psn_map.get((rel, loc))
     records.append({"file": f"sanitized/{rel}", "loc": loc, "patient": pid})
     Stats.records += 1
     Stats.linked += pid is not None
@@ -229,16 +225,17 @@ def main() -> int:
     a = ap.parse_args()
     t0 = time.monotonic()
     inp, out = Path(a.input), Path(a.output)
+    secret = os.environ.get("RAKSHA_SECRET", "").encode()
+    if not secret:
+        print("ERROR: RAKSHA_SECRET must be set in environment", file=sys.stderr)
+        return 1
+
+    psn_map = build_pseudonym_map(inp, secret)
+
     san = out / "sanitized"
     san.mkdir(parents=True, exist_ok=True)
     files, records = [], []
     sys.setrecursionlimit(5000)
-
-    secret_key = os.environ.get("RAKSHA_SECRET", "").encode("utf-8")
-    if not secret_key:
-        raise ValueError("RAKSHA_SECRET environment variable is missing or empty")
-
-    psn_map = build_pseudonym_map(inp, secret_key)
 
     for path in sorted(p for p in inp.rglob("*") if p.is_file()):
         rel = path.relative_to(inp).as_posix()
