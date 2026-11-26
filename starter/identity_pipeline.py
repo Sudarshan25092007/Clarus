@@ -16,6 +16,7 @@ from identity_features import compare_records
 from identity_decision import build_candidate_edge
 from identity_clustering import cluster_records
 from identity_pseudonym import assign_pseudonyms
+from identity_clinical_linker import propagate_clinical_pseudonyms
 
 
 def build_pseudonym_map(
@@ -30,6 +31,7 @@ def build_pseudonym_map(
       3. Compute pairwise features & decision edges (MATCH/NON_MATCH/UNCERTAIN).
       4. Run Score-Ordered Constrained Union-Find clustering with lazy cross-pair verification.
       5. Assign deterministic keyed HMAC pseudonyms (PSN-XXXXXX).
+      6. Propagate registration clusters across clinical and unstructured files (Checkpoint 8).
 
     Args:
       input_dir: Path to the dataset input root directory (e.g. dev/input).
@@ -60,6 +62,9 @@ def build_pseudonym_map(
     clustering_res = cluster_records(records, candidate_edges)
     clusters = clustering_res["clusters"]
 
-    # 4. Deterministic HMAC pseudonym assignment
-    psn_map = assign_pseudonyms(records, clusters, secret_key)
-    return psn_map
+    # 4. Deterministic HMAC pseudonym assignment on registration clusters
+    reg_psn_map = assign_pseudonyms(records, clusters, secret_key)
+
+    # 5. Clinical and unstructured propagation across remaining files (Checkpoint 8)
+    full_psn_map = propagate_clinical_pseudonyms(input_dir, records, reg_psn_map)
+    return full_psn_map
