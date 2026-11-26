@@ -106,6 +106,188 @@ def age_band(age: int) -> str:
     return f"{lo}-{lo + w - 1}"
 
 
+_DEVANAGARI_TO_ASCII = str.maketrans("०१२३४५६७८९", "0123456789")
+_ASCII_TO_DEVANAGARI = str.maketrans("0123456789", "०१२३४५६७८९")
+_MONTH_MAP: dict[str, int] = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6,
+    "jul": 7, "july": 7, "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9, "oct": 10, "october": 10,
+    "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+_MONTH_FULL = (
+    "", "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+_MONTH_SHORT = (
+    "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
+
+
+def _detect_header_date_order(header: str) -> str | None:
+    low = header.lower()
+    if "mm/dd" in low or "mm-dd" in low or "mm.dd" in low or "mdy" in low:
+        return "MDY"
+    if "dd/mm" in low or "dd-mm" in low or "dd.mm" in low or "dmy" in low:
+        return "DMY"
+    if "yyyy-mm-dd" in low or "yyyy/mm/dd" in low:
+        return "ISO"
+    return None
+
+
+def _infer_date_order_from_values(values: list[str], explicit_order: str | None = None) -> str | None:
+    if explicit_order in ("MDY", "DMY"):
+        return explicit_order
+    mdy = dmy = 0
+    for raw in values:
+        ascii_s = raw.translate(_DEVANAGARI_TO_ASCII).strip()
+        for m in re.finditer(r"(?<!\d)(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?!\d)", ascii_s):
+            p1, p2 = int(m.group(1)), int(m.group(2))
+            if p2 > 12 and 1 <= p1 <= 12:
+                mdy += 1
+            elif p1 > 12 and 1 <= p2 <= 12:
+                dmy += 1
+    if mdy > 0 and dmy == 0:
+        return "MDY"
+    if dmy > 0 and mdy == 0:
+        return "DMY"
+    return explicit_order
+
+
+def _shift_date_str(
+    raw: str,
+    shift_days: int | None,
+    date_order: str | None = None,
+) -> tuple[str, bool]:
+    """Shift a date or timestamp string by shift_days while preserving format and time suffix."""
+    if shift_days is None or not raw or not raw.strip():
+        return raw, False
+    has_deva = any("\u0966" <= ch <= "\u096f" for ch in raw)
+    s = raw.translate(_DEVANAGARI_TO_ASCII).strip()
+
+    def _restore_digits(val: str) -> str:
+        return val.translate(_ASCII_TO_DEVANAGARI) if has_deva else val
+
+    # 1. ISO date or ISO dateTime (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS...)
+    m_iso = re.match(r"^(\d{4})([-/.])(\d{1,2})\2(\d{1,2})(.*)$", s)
+    if m_iso:
+        y, sep, mon, day, rest = (
+            int(m_iso.group(1)),
+            m_iso.group(2),
+            int(m_iso.group(3)),
+            int(m_iso.group(4)),
+            m_iso.group(5),
+        )
+        if 1900 <= y <= 2035:
+            try:
+                shifted = dt.date(y, mon, day) + dt.timedelta(days=shift_days)
+                out = f"{shifted.year:04d}{sep}{shifted.month:02d}{sep}{shifted.day:02d}{rest}"
+                return _restore_digits(out), True
+            except ValueError:
+                return raw, False
+
+    # 2. Delimited numeric DMY/MDY + optional trailing time ("01/13/2026" or "01/13/2026 22:00")
+    m_num = re.match(r"^(\d{1,2})([-/.])(\d{1,2})\2(\d{4})(.*)$", s)
+    if m_num:
+        p1, sep, p2, y, rest = (
+            int(m_num.group(1)),
+            m_num.group(2),
+            int(m_num.group(3)),
+            int(m_num.group(4)),
+            m_num.group(5),
+        )
+        if 1900 <= y <= 2035:
+            order = ((p1, p2, True), (p2, p1, False)) if date_order == "MDY" else ((p2, p1, False), (p1, p2, True))
+            for mon, day, used_mdy in order:
+                try:
+                    shifted = dt.date(y, mon, day) + dt.timedelta(days=shift_days)
+                    if used_mdy:
+                        out = f"{shifted.month:02d}{sep}{shifted.day:02d}{sep}{shifted.year:04d}{rest}"
+                    else:
+                        out = f"{shifted.day:02d}{sep}{shifted.month:02d}{sep}{shifted.year:04d}{rest}"
+                    return _restore_digits(out), True
+                except ValueError:
+                    continue
+
+    # 3. 2-digit year DMY/MDY (e.g. WhatsApp "30/05/26")
+    m_short = re.fullmatch(r"(\d{1,2})([/-])(\d{1,2})\2(\d{2})", s)
+    if m_short:
+        p1, sep, p2, yy = int(m_short.group(1)), m_short.group(2), int(m_short.group(3)), int(m_short.group(4))
+        y = 2000 + yy if yy <= 50 else 1900 + yy
+        order = ((p1, p2, True), (p2, p1, False)) if date_order == "MDY" else ((p2, p1, False), (p1, p2, True))
+        for mon, day, used_mdy in order:
+            try:
+                shifted = dt.date(y, mon, day) + dt.timedelta(days=shift_days)
+                if used_mdy:
+                    out = f"{shifted.month:02d}{sep}{shifted.day:02d}{sep}{shifted.year % 100:02d}"
+                else:
+                    out = f"{shifted.day:02d}{sep}{shifted.month:02d}{sep}{shifted.year % 100:02d}"
+                return _restore_digits(out), True
+            except ValueError:
+                continue
+
+    # 4. Textual full date ("12 Apr 1977", "5 September 2026")
+    m_txt = re.fullmatch(r"(\d{1,2})([\s/-]+)([A-Za-z]+)([\s,/-]+)(\d{4})", s)
+    if m_txt:
+        day, s1, mon_word, s2, y = (
+            int(m_txt.group(1)),
+            m_txt.group(2),
+            m_txt.group(3),
+            m_txt.group(4),
+            int(m_txt.group(5)),
+        )
+        mon = _MONTH_MAP.get(mon_word.lower())
+        if mon and 1900 <= y <= 2035:
+            try:
+                shifted = dt.date(y, mon, day) + dt.timedelta(days=shift_days)
+                mname = _MONTH_FULL[shifted.month] if len(mon_word) > 4 else _MONTH_SHORT[shifted.month]
+                return f"{shifted.day}{s1}{mname}{s2}{shifted.year}", True
+            except ValueError:
+                return raw, False
+
+    # 5. Yearless clinical visit date ("5 September", "23 April")
+    m_yl = re.fullmatch(r"(\d{1,2})\s+([A-Za-z]+)", s)
+    if m_yl:
+        day, mon_word = int(m_yl.group(1)), m_yl.group(2)
+        mon = _MONTH_MAP.get(mon_word.lower())
+        if mon:
+            try:
+                shifted = dt.date(2026, mon, day) + dt.timedelta(days=shift_days)
+                mname = _MONTH_FULL[shifted.month] if len(mon_word) > 4 else _MONTH_SHORT[shifted.month]
+                return f"{shifted.day} {mname}", True
+            except ValueError:
+                return raw, False
+
+    return raw, False
+
+
+def _format_age_band_value(raw: Any) -> tuple[Any, bool]:
+    """Generalize integer or structured string ages via age_band() preserving units/sex."""
+    if isinstance(raw, bool):
+        return raw, False
+    if isinstance(raw, int):
+        return age_band(raw), True
+    if not isinstance(raw, str):
+        return raw, False
+    ascii_s = raw.translate(_DEVANAGARI_TO_ASCII)
+    m_as = re.match(
+        r"^(\s*)(-?\d+)(\s*(?:Y(?:rs?|ears?)?|वर्ष)?\s*/\s*(?:[MFO]|male|female|other|पुरुष|महिला|अन्य)\s*)$",
+        ascii_s,
+        flags=re.IGNORECASE,
+    )
+    if m_as:
+        age_val = int(m_as.group(2))
+        if -5 <= age_val <= 125:
+            return f"{m_as.group(1)}{age_band(age_val)}{m_as.group(3)}", True
+    m_age = re.match(r"^(\s*)(-?\d+)(\s*(?:Y(?:rs?|ears?)?|वर्ष)?\s*)$", ascii_s, flags=re.IGNORECASE)
+    if m_age:
+        age_val = int(m_age.group(2))
+        if -5 <= age_val <= 125:
+            return f"{m_age.group(1)}{age_band(age_val)}{m_age.group(3)}", True
+    return raw, False
+
+
 # --------------------------------------------------------------------------- detection
 # TODO(team): this is the part that wins or loses the event. Ideas, in rough order of value:
 #   * column-aware rules: a column named like a name/phone/address is PII whatever it contains
@@ -239,6 +421,8 @@ def process_csv(
     col_roles = []
     for j, h in enumerate(header):
         norm_h = re.sub(r"[\(\)\[\]\/\\_ -]+", "_", h.replace("\x00", "").replace("\ufeff", "").lower().strip()).strip("_")
+        norm_key_clean = re.sub(r"\([^)]*\)", "", h.replace("\x00", "").replace("\ufeff", ""))
+        norm_key_clean = re.sub(r"[^a-z0-9]+", "_", norm_key_clean.lower()).strip("_")
         cleaned_h = h
         if any(mrn in h for mrn in gazetteer.get("mrns", [])) or any(
             len(name) >= 4 and name in h for name in gazetteer.get("patient_names", [])
@@ -246,14 +430,39 @@ def process_csv(
             cleaned_h = f"Patient_{j}"
         out_header.append(cleaned_h)
 
-        if any(k in norm_h for k in ("uhid", "reg_no", "patientid", "patient_id", "mrn", "ipd_no", "hospital_uhid")):
+        if any(
+            k in norm_h
+            for k in (
+                "uhid",
+                "reg_no",
+                "registration_no",
+                "patientid",
+                "patient_id",
+                "patient_ref",
+                "mrn",
+                "mr_no",
+                "mr_number",
+                "ipd_no",
+                "hospital_uhid",
+                "hosp_id",
+            )
+        ):
             role = "mrn"
         elif any(k in norm_h for k in ("patient_name", "naam", "first_name", "last_name", "firstname", "lastname")) or norm_h == "name":
             role = "patient_name"
         elif any(k in norm_h for k in ("relative_name", "guardian", "pita_pati", "father_name", "husband_name", "mother_name")):
             role = "relative_name"
-        elif "dob" in norm_h or "janm_tithi" in norm_h or "birthdate" in norm_h:
+        elif "dob" in norm_h or "janm_tithi" in norm_h or "birthdate" in norm_h or "birth_date" in norm_h:
             role = "dob"
+        elif norm_key_clean in ("age", "umar"):
+            role = "age"
+        elif norm_key_clean in ("age_sex", "age_gender"):
+            role = "age_sex"
+        elif (
+            norm_key_clean in ("date", "registered", "registration_date", "reg_date", "collected_on", "reported_on")
+            or norm_key_clean.endswith("_date")
+        ):
+            role = "clinical_date"
         elif "email" in norm_h:
             role = "email"
         elif any(k in norm_h for k in ("address", "pata", "street")):
@@ -278,6 +487,15 @@ def process_csv(
             role = "medical"
         col_roles.append(role)
 
+    col_date_orders: list[str | None] = []
+    for j, h in enumerate(header):
+        if col_roles[j] in ("dob", "clinical_date"):
+            hdr_ord = _detect_header_date_order(h)
+            col_vals = [r[j] for r in body if j < len(r) and r[j].strip()]
+            col_date_orders.append(_infer_date_order_from_values(col_vals, hdr_ord))
+        else:
+            col_date_orders.append(None)
+
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=delimiter, lineterminator="\n")
     w.writerow(out_header)
@@ -285,9 +503,11 @@ def process_csv(
     for i, row in enumerate(body):
         loc = f"row:{i}"
         pid = resolver.get_patient_id(rel, loc)
+        shift_days = resolver.get_date_shift_days(rel, loc)
         records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
         Stats.records += 1
         Stats.linked += pid is not None
+        row_generalized = False
 
         out_row = []
         for j, c in enumerate(row):
@@ -320,15 +540,146 @@ def process_csv(
             elif role == "insurance":
                 out_row.append("[INSURANCE_ID]")
             elif role == "dob":
+                if shift_days is not None:
+                    shifted, ok = _shift_date_str(c, shift_days, col_date_orders[j])
+                    if ok:
+                        out_row.append(shifted)
+                        row_generalized = True
+                        continue
                 out_row.append("[DOB]")
+            elif role == "clinical_date":
+                shifted, ok = _shift_date_str(c, shift_days, col_date_orders[j])
+                if ok:
+                    row_generalized = True
+                out_row.append(shifted)
+            elif role in ("age", "age_sex"):
+                if pid is not None:
+                    banded, ok = _format_age_band_value(c)
+                    if ok:
+                        row_generalized = True
+                    out_row.append(str(banded))
+                else:
+                    out_row.append(c)
             elif role == "email":
                 out_row.append("[EMAIL]")
             elif role == "freetext":
                 out_row.append(redact_text(c, gazetteer))
             else:
                 out_row.append(c)
+        if row_generalized:
+            Stats.generalized += 1
         w.writerow(out_row)
     return buf.getvalue()
+
+
+_JSON_DATE_KEYS = frozenset(
+    {
+        "dob",
+        "birthdate",
+        "birth_date",
+        "janm_tithi",
+        "visit_date",
+        "date",
+        "collected",
+        "reported",
+        "registered_on",
+        "admission_date",
+        "discharge_date",
+        "effectivedatetime",
+        "authoredon",
+        "recordeddate",
+        "onsetdatetime",
+        "performeddatetime",
+        "issued",
+    }
+)
+
+
+def _generalize_json_record(
+    node: Any,
+    pid: str | None,
+    shift_days: int | None,
+    date_order: str | None = None,
+) -> bool:
+    """Apply age banding and date shifting in-place to structured JSON record keys."""
+    if not isinstance(node, dict):
+        return False
+    changed = False
+    for k, v in list(node.items()):
+        lk = re.sub(r"[\s-]+", "_", str(k).strip().lower())
+        if isinstance(v, dict):
+            if lk == "_export_meta":
+                continue
+            if _generalize_json_record(v, pid, shift_days, date_order):
+                changed = True
+        elif isinstance(v, list):
+            for elem in v:
+                if _generalize_json_record(elem, pid, shift_days, date_order):
+                    changed = True
+        elif pid is not None and lk in ("age", "umar", "age_sex", "age_gender"):
+            banded, ok = _format_age_band_value(v)
+            if ok:
+                node[k] = banded
+                changed = True
+        elif shift_days is not None and isinstance(v, str) and (
+            lk in _JSON_DATE_KEYS or lk.endswith("_date")
+        ):
+            shifted, ok = _shift_date_str(v, shift_days, date_order)
+            if ok:
+                node[k] = shifted
+                changed = True
+    return changed
+
+
+def _rewrite_fhir_patient_refs(node: Any, ref_targets: set[str], new_ref: str) -> None:
+    """Recursively rewrite FHIR Patient reference strings so internal links stay valid."""
+    if isinstance(node, dict):
+        if "reference" in node and isinstance(node["reference"], str):
+            if node["reference"] in ref_targets:
+                node["reference"] = new_ref
+        for k, v in node.items():
+            if k != "reference":
+                _rewrite_fhir_patient_refs(v, ref_targets, new_ref)
+    elif isinstance(node, list):
+        for item in node:
+            _rewrite_fhir_patient_refs(item, ref_targets, new_ref)
+
+
+def _shift_fhir_dates(bundle: dict[str, Any], shift_days: int) -> bool:
+    """Shift all FHIR R4 clinical dates/timestamps consistently by shift_days."""
+    changed = False
+    for obj, key in ((bundle.get("meta"), "lastUpdated"), (bundle, "timestamp")):
+        if isinstance(obj, dict) and isinstance(obj.get(key), str):
+            shifted, ok = _shift_date_str(obj[key], shift_days, "ISO")
+            if ok:
+                obj[key] = shifted
+                changed = True
+
+    for entry in bundle.get("entry") or []:
+        res = (entry or {}).get("resource")
+        if not isinstance(res, dict):
+            continue
+        if isinstance(res.get("meta"), dict) and isinstance(res["meta"].get("lastUpdated"), str):
+            shifted, ok = _shift_date_str(res["meta"]["lastUpdated"], shift_days, "ISO")
+            if ok:
+                res["meta"]["lastUpdated"] = shifted
+                changed = True
+        for dk in ("birthDate", "date", "effectiveDateTime", "issued", "authoredOn", "recordedDate", "onsetDateTime", "performedDateTime"):
+            if isinstance(res.get(dk), str):
+                shifted, ok = _shift_date_str(res[dk], shift_days, "ISO")
+                if ok:
+                    res[dk] = shifted
+                    changed = True
+        for pk in ("period", "performedPeriod"):
+            pobj = res.get(pk)
+            if isinstance(pobj, dict):
+                for bound in ("start", "end"):
+                    if isinstance(pobj.get(bound), str):
+                        shifted, ok = _shift_date_str(pobj[bound], shift_days, "ISO")
+                        if ok:
+                            pobj[bound] = shifted
+                            changed = True
+    return changed
 
 
 def process_json(
@@ -343,13 +694,31 @@ def process_json(
     if _is_json_doc(data):  # FHIR Bundle, single-patient report, or single object
         loc = "doc"
         pid = resolver.get_patient_id(rel, loc)
+        shift_days = resolver.get_date_shift_days(rel, loc)
         records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
         Stats.records += 1
         Stats.linked += pid is not None
+        doc_generalized = False
 
         if isinstance(data, dict) and data.get("resourceType") == "Bundle":
             if "meta" in data and isinstance(data["meta"], dict) and "source" in data["meta"]:
                 data["meta"]["source"] = f"#{pid}" if pid is not None else "#[MRN]"
+
+            ref_targets: set[str] = set()
+            if pid is not None:
+                for entry in data.get("entry") or []:
+                    res = (entry or {}).get("resource") or {}
+                    if res.get("resourceType") == "Patient":
+                        old_id = res.get("id")
+                        old_full = entry.get("fullUrl")
+                        if isinstance(old_full, str) and old_full:
+                            ref_targets.add(old_full)
+                        if isinstance(old_id, str) and old_id:
+                            ref_targets.add(f"Patient/{old_id}")
+                            ref_targets.add(f"urn:uuid:{old_id}")
+                if ref_targets:
+                    _rewrite_fhir_patient_refs(data, ref_targets, f"Patient/{pid}")
+
             for entry in data.get("entry") or []:
                 res = (entry or {}).get("resource") or {}
                 rt = res.get("resourceType")
@@ -362,17 +731,35 @@ def process_json(
                 if rt == "Patient":
                     if pid:
                         res["id"] = pid
+                        if "fullUrl" in entry:
+                            entry["fullUrl"] = f"Patient/{pid}"
                     res["text"] = {"status": "empty", "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">[REDACTED]</div>"}
                     res["name"] = [{"text": "[PATIENT_NAME]"}]
                     if "telecom" in res:
                         res["telecom"] = [{"system": "phone", "value": "[PHONE]"}]
                     if "address" in res:
                         res["address"] = [{"line": ["[ADDRESS]"], "city": "[VILLAGE]", "postalCode": "[PIN]"}]
-                    if "birthDate" in res and isinstance(res["birthDate"], str):
+                    if "birthDate" in res and isinstance(res["birthDate"], str) and shift_days is None:
                         res["birthDate"] = res["birthDate"][:4] + "-01-01"
-                    if "identifier" in res:
+                        doc_generalized = True
+                    if "identifier" in res and isinstance(res["identifier"], list):
                         for ident in res["identifier"]:
-                            ident["value"] = pid if pid is not None else "[MRN]"
+                            if not isinstance(ident, dict):
+                                continue
+                            sys_u = str(ident.get("system", "")).lower()
+                            codes = {
+                                str(c.get("code", "")).upper()
+                                for c in ((ident.get("type") or {}).get("coding") or [])
+                                if isinstance(c, dict)
+                            }
+                            if "healthid" in sys_u or "abdm" in sys_u:
+                                ident["value"] = "[ABHA_NUMBER]"
+                            elif "aadhaar" in sys_u or "aadhar" in sys_u or "uidai" in sys_u:
+                                ident["value"] = "[AADHAAR]"
+                            elif "pan" in sys_u:
+                                ident["value"] = "[PAN]"
+                            else:
+                                ident["value"] = pid if pid is not None else "[MRN]"
                     if "contact" in res and isinstance(res["contact"], list):
                         for c in res["contact"]:
                             c["name"] = {"text": "[RELATIVE_NAME]"}
@@ -392,32 +779,51 @@ def process_json(
                         att = (cnt or {}).get("attachment") or {}
                         if "data" in att and isinstance(att["data"], str):
                             att["data"] = sanitize_base64_string(att["data"], gazetteer)
+
+            if shift_days is not None and _shift_fhir_dates(data, shift_days):
+                doc_generalized = True
         elif isinstance(data, dict) and "lab" in data and "patient" in data and isinstance(data["patient"], dict):
             p_dict = data["patient"]
             p_dict["name"] = "[PATIENT_NAME]"
             p_dict["phone"] = "[PHONE]"
-            p_dict["hospital_uhid"] = pid if pid is not None else "[MRN]"
+            for id_k in ("hospital_uhid", "uhid", "mrn", "patient_ref", "patient_id"):
+                if id_k in p_dict:
+                    p_dict[id_k] = pid if pid is not None else "[MRN]"
             if "remarks" in data and isinstance(data["remarks"], str):
                 data["remarks"] = redact_text(data["remarks"], gazetteer)
+            if _generalize_json_record(data, pid, shift_days):
+                doc_generalized = True
         elif isinstance(data, dict) and "attachment" in data and isinstance(data["attachment"], dict):
             att = data["attachment"]
             if "data" in att and isinstance(att["data"], str):
                 att["data"] = sanitize_base64_string(att["data"], gazetteer)
+            if _generalize_json_record(data, pid, shift_days):
+                doc_generalized = True
         else:
             data = clean_json_value(data, gazetteer, pid)
+            if _generalize_json_record(data, pid, shift_days):
+                doc_generalized = True
+
+        if doc_generalized:
+            Stats.generalized += 1
     else:
         if isinstance(data, dict) and "visits" in data and isinstance(data["visits"], list):
             if "_export_meta" in data and isinstance(data["_export_meta"], dict):
                 meta = data["_export_meta"]
                 meta["source_path"] = "D:\\HIS\\exports\\opd\\export\\visits.json"
+            visit_order = _infer_date_order_from_values(
+                [str(v["visit_date"]) for v in data["visits"] if isinstance(v, dict) and isinstance(v.get("visit_date"), str)]
+            )
             for i, v in enumerate(data["visits"]):
                 loc = f"/visits/{i}"
                 pid = resolver.get_patient_id(rel, loc)
+                shift_days = resolver.get_date_shift_days(rel, loc)
                 records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
                 Stats.records += 1
                 Stats.linked += pid is not None
-                if "patient_ref" in v:
-                    v["patient_ref"] = pid if pid is not None else "[MRN]"
+                for id_k in ("patient_ref", "uhid", "mrn", "patient_id"):
+                    if id_k in v:
+                        v[id_k] = pid if pid is not None else "[MRN]"
                 if "address_note" in v:
                     v["address_note"] = "[ADDRESS]"
                 if "notes" in v and isinstance(v["notes"], str):
@@ -431,16 +837,19 @@ def process_json(
                         v["patient"]["phone"] = "[PHONE]"
                     if "hospital_uhid" in v["patient"]:
                         v["patient"]["hospital_uhid"] = pid if pid is not None else "[MRN]"
+                if _generalize_json_record(v, pid, shift_days, visit_order):
+                    Stats.generalized += 1
         elif isinstance(data, dict) and "patients" in data and isinstance(data["patients"], list):
             for i, p in enumerate(data["patients"]):
                 loc = f"/patients/{i}"
                 pid = resolver.get_patient_id(rel, loc)
+                shift_days = resolver.get_date_shift_days(rel, loc)
                 records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
                 Stats.records += 1
                 Stats.linked += pid is not None
-                p["uhid"] = pid if pid is not None else "[MRN]"
-                if "dob" in p:
-                    p["dob"] = "[DOB]"
+                for id_k in ("uhid", "mrn", "patient_ref", "patient_id", "reg_no"):
+                    if id_k in p:
+                        p[id_k] = pid if pid is not None else "[MRN]"
                 if "name" in p and isinstance(p["name"], dict):
                     p["name"]["first"] = "[PATIENT_NAME]"
                     p["name"]["last"] = ""
@@ -457,19 +866,50 @@ def process_json(
                 if "ids" in p and isinstance(p["ids"], dict):
                     p["ids"]["aadhar_no"] = "[AADHAAR]"
                     p["ids"]["abha"] = "[ABHA_NUMBER]"
+                row_gen = _generalize_json_record(p, pid, shift_days)
+                if "dob" in p and shift_days is None:
+                    p["dob"] = "[DOB]"
+                if row_gen:
+                    Stats.generalized += 1
         else:
-            for k, v in data.items():
+            for k, v in list(data.items()):
                 if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
                     pointer_key = k.replace("~", "~0").replace("/", "~1")
+                    list_order = _infer_date_order_from_values(
+                        [str(it.get("date")) for it in v if isinstance(it, dict) and isinstance(it.get("date"), str)]
+                    )
                     for i, item in enumerate(v):
                         loc = f"/{pointer_key}/{i}"
                         pid = resolver.get_patient_id(rel, loc)
+                        shift_days = resolver.get_date_shift_days(rel, loc)
                         records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
                         Stats.records += 1
                         Stats.linked += pid is not None
-            data = clean_json_value(data, gazetteer)
+                        cleaned_item = clean_json_value(item, gazetteer, pid)
+                        if _generalize_json_record(cleaned_item, pid, shift_days, list_order):
+                            Stats.generalized += 1
+                        v[i] = cleaned_item
+                elif k != "_export_meta":
+                    data[k] = clean_json_value(v, gazetteer)
 
     return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+
+
+_RE_TEXT_DATE_LINE = re.compile(
+    r"^([ \t]*(?:Date\s+of\s+Admission|Date\s+of\s+Discharge|Admission\s+Date|Discharge\s+Date"
+    r"|Visit(?:\s+Date)?|Date|तारीख|तिथि|भर्ती\s+की\s+तारीख|छुट्टी\s+की\s+तारीख)\s*[:=]\s*)([^\r\n]+?)(?=\r?$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_RE_NURSING_DATE_LEAD = re.compile(r"^(\d{1,2}[-/.]\d{1,2}[-/.]\d{4})([ \t]+\d{1,2}:\d{2}\b)", re.MULTILINE)
+_RE_WHATSAPP_HDR_DATE = re.compile(r"^\[(\d{1,2}/\d{1,2}/\d{2})(,[^\]]+\])", re.MULTILINE)
+_RE_TEXT_AGE_LABEL = re.compile(
+    r"((?:Age/Sex|Age|आयु|उम्र)\s*[:=]\s*)(-?\d{1,3}(?:\s*(?:Y(?:rs?|ears?)?|वर्ष)?(?:\s*/\s*(?:[MFO]|male|female|other|पुरुष|महिला|अन्य))?)?)",
+    re.IGNORECASE,
+)
+_RE_WHATSAPP_AGE_TAIL = re.compile(
+    r"(Report\s+of\s+\[PATIENT_NAME\]\s+)(-?\d{1,3})(\s*Y(?:\s*/\s*[MFO])?)",
+    re.IGNORECASE,
+)
 
 
 def process_text(
@@ -482,10 +922,80 @@ def process_text(
 ) -> str:
     loc = "doc"
     pid = resolver.get_patient_id(rel, loc)
+    shift_days = resolver.get_date_shift_days(rel, loc)
+    rec = resolver._by_locator.get((rel, loc))
     records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
     Stats.records += 1
     Stats.linked += pid is not None
-    return redact_text(text, gazetteer)
+
+    file_date_order = _infer_date_order_from_values(
+        [text], rec.dob_date_order if rec is not None else None
+    )
+    redacted = redact_text(text, gazetteer)
+
+    if pid is not None and rec is not None and rec.mrns:
+        if "[MRN]" in redacted:
+            redacted = redacted.replace("[MRN]", pid)
+        for raw_mrn in sorted(rec.mrns, key=len, reverse=True):
+            if len(raw_mrn) >= 4 and raw_mrn in redacted:
+                redacted = redacted.replace(raw_mrn, pid)
+
+    text_generalized = False
+    if shift_days is not None:
+        def _sub_date_line(m: re.Match) -> str:
+            nonlocal text_generalized
+            shifted, ok = _shift_date_str(m.group(2), shift_days, file_date_order)
+            if ok:
+                text_generalized = True
+                return f"{m.group(1)}{shifted}"
+            return m.group(0)
+
+        redacted = _RE_TEXT_DATE_LINE.sub(_sub_date_line, redacted)
+
+        def _sub_nursing_ts(m: re.Match) -> str:
+            nonlocal text_generalized
+            shifted, ok = _shift_date_str(m.group(1), shift_days, file_date_order)
+            if ok:
+                text_generalized = True
+                return f"{shifted}{m.group(2)}"
+            return m.group(0)
+
+        redacted = _RE_NURSING_DATE_LEAD.sub(_sub_nursing_ts, redacted)
+
+        def _sub_wa_date(m: re.Match) -> str:
+            nonlocal text_generalized
+            shifted, ok = _shift_date_str(m.group(1), shift_days, file_date_order)
+            if ok:
+                text_generalized = True
+                return f"[{shifted}{m.group(2)}"
+            return m.group(0)
+
+        redacted = _RE_WHATSAPP_HDR_DATE.sub(_sub_wa_date, redacted)
+
+    if pid is not None:
+        def _sub_age_lbl(m: re.Match) -> str:
+            nonlocal text_generalized
+            banded, ok = _format_age_band_value(m.group(2))
+            if ok:
+                text_generalized = True
+                return f"{m.group(1)}{banded}"
+            return m.group(0)
+
+        redacted = _RE_TEXT_AGE_LABEL.sub(_sub_age_lbl, redacted)
+
+        def _sub_wa_age(m: re.Match) -> str:
+            nonlocal text_generalized
+            banded, ok = _format_age_band_value(int(m.group(2)))
+            if ok:
+                text_generalized = True
+                return f"{m.group(1)}{banded}{m.group(3)}"
+            return m.group(0)
+
+        redacted = _RE_WHATSAPP_AGE_TAIL.sub(_sub_wa_age, redacted)
+
+    if text_generalized:
+        Stats.generalized += 1
+    return redacted
 
 
 def peak_rss_mb() -> float:
@@ -510,6 +1020,12 @@ def main() -> int:
     if not SECRET:
         print("ERROR: RAKSHA_SECRET must be set in environment", file=sys.stderr)
         return 1
+
+    Stats.identifiers = 0
+    Stats.records = 0
+    Stats.linked = 0
+    Stats.generalized = 0
+    Stats.suppressed = 0
 
     psn_map_paths = sorted(p for p in inp.rglob("*") if p.is_file())
     sys.setrecursionlimit(5000)
