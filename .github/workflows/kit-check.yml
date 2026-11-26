@@ -22,7 +22,15 @@ jobs:
         run: |
           python3 starter/main.py --input dev/input --output my_output_2
           diff -r -x report.json my_output my_output_2
+      - name: Run test suite
+        run: |
+          python3 tests/test_phase1_extract.py
+          python3 tests/test_identity_extractor.py
+          python3 tests/test_identity_linker.py
+          python3 tests/test_identity_features.py
+          python3 tests/test_identity_decision.py
+          python3 tests/test_identity_clustering.py
       - name: Pre-submit check (static part)
-        run: python3 check_submission.py --repo starter || true
+        run: python3 check_submission.py --repo .
       - name: Practice self-check
         run: python3 check_dev.py --output my_output

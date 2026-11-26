@@ -18,8 +18,8 @@ from pathlib import Path
 import sys
 
 # Ensure starter is in sys.path
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "starter"))
 
 from identity_extractor import (
     normalize_name,
@@ -220,7 +220,7 @@ def test_normalize_identity_combined():
 
 def test_registration_adapters():
     print("Testing registration format adapters on dev/input/...")
-    dev_dir = HERE.parent / "dev" / "input"
+    dev_dir = REPO_ROOT / "dev" / "input"
     if not dev_dir.exists():
         print("  [SKIP] dev/input not found at", dev_dir)
         return

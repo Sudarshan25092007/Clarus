@@ -17,8 +17,8 @@ import re
 import sys
 
 # Ensure starter is in sys.path
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "starter"))
 
 from identity_adapters import (
     extract_sanjeevani_csv,
@@ -39,7 +39,7 @@ from identity_pseudonym import (
 
 def test_dev_clustering_and_precision():
     print("Testing Test 1: Dev dataset partition completeness and precision...")
-    dev_dir = HERE.parent / "dev"
+    dev_dir = REPO_ROOT / "dev"
     if not (dev_dir / "truth" / "truth.json").exists():
         print("  [SKIP] truth.json not found")
         return
@@ -196,7 +196,7 @@ def test_pseudonym_determinism_and_format():
 
 def test_order_independence():
     print("Testing Test 5: Candidate edge order independence...")
-    dev_dir = HERE.parent / "dev"
+    dev_dir = REPO_ROOT / "dev"
     if not (dev_dir / "truth" / "truth.json").exists():
         print("  [SKIP] truth.json not found")
         return

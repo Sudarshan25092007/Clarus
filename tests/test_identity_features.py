@@ -14,8 +14,8 @@ from pathlib import Path
 import sys
 
 # Ensure starter is in sys.path
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "starter"))
 
 from identity_adapters import (
     extract_sanjeevani_csv,
@@ -145,7 +145,7 @@ def test_missing_data_features():
 
 def test_candidate_pairs_aggregate_statistics():
     print("Evaluating feature distributions across all 22 candidate pairs...")
-    dev_dir = HERE.parent / "dev"
+    dev_dir = REPO_ROOT / "dev"
     if not (dev_dir / "truth" / "truth.json").exists():
         print("  [SKIP] truth.json not found")
         return

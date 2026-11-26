@@ -17,8 +17,8 @@ from pathlib import Path
 import sys
 
 # Ensure starter is in sys.path
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "starter"))
 
 from identity_adapters import (
     extract_sanjeevani_csv,
@@ -136,7 +136,7 @@ def test_synthetic_invariants():
 
 def test_registration_recall():
     print("Testing candidate recall against ground truth on registration files...")
-    dev_dir = HERE.parent / "dev"
+    dev_dir = REPO_ROOT / "dev"
     if not (dev_dir / "truth" / "truth.json").exists():
         print("  [SKIP] dev/truth/truth.json not found")
         return
