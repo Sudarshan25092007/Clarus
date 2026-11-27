@@ -30,11 +30,12 @@ import os
 import re
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 try:
-    from identity import IdentityResolver
+    from identity import IdentityResolver, devanagari_to_latin, phonetic_skeleton
     from identity_redactor import (
         build_pii_gazetteer,
         redact_text,
@@ -45,7 +46,7 @@ try:
         reset_detections_count,
     )
 except ImportError:  # allow importing starter.main as a package from repo root
-    from starter.identity import IdentityResolver
+    from starter.identity import IdentityResolver, devanagari_to_latin, phonetic_skeleton
     from starter.identity_redactor import (
         build_pii_gazetteer,
         redact_text,
@@ -59,7 +60,11 @@ except ImportError:  # allow importing starter.main as a package from repo root
 # --------------------------------------------------------------------------- policy
 def load_policy(path: Path) -> dict[str, int | str]:
     """Tiny `key: value` reader for config/policy.yaml (no PyYAML needed)."""
-    policy: dict[str, int | str] = {}
+    policy: dict[str, int | str] = {
+        "age_band_years": 5,
+        "date_shift_max_days": 180,
+        "min_group_size": 5,
+    }
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
             line = line.split("#", 1)[0].strip()
@@ -70,7 +75,10 @@ def load_policy(path: Path) -> dict[str, int | str]:
 
 
 HERE = Path(__file__).resolve().parent
-POLICY = load_policy(HERE / "config" / "policy.yaml")
+_POLICY_PATH = HERE / "config" / "policy.yaml"
+if not _POLICY_PATH.exists():
+    _POLICY_PATH = HERE.parent / "config" / "policy.yaml"
+POLICY = load_policy(_POLICY_PATH)
 SECRET = os.environ.get("RAKSHA_SECRET", "").encode()  # never print or write this
 
 
@@ -266,12 +274,19 @@ def _shift_date_str(
     return raw, False
 
 
-def _format_age_band_value(raw: Any) -> tuple[Any, bool]:
+def _format_age_band_value(raw: Any, band_years: int | None = None) -> tuple[Any, bool]:
     """Generalize integer or structured string ages via age_band() preserving units/sex."""
+    def _band_for_width(age_val: int) -> str:
+        if band_years is None:
+            return age_band(age_val)
+        w = max(int(band_years), 1)
+        lo = (age_val // w) * w
+        return f"{lo}-{lo + w - 1}"
+
     if isinstance(raw, bool):
         return raw, False
     if isinstance(raw, int):
-        return age_band(raw), True
+        return _band_for_width(raw), True
     if not isinstance(raw, str):
         return raw, False
     ascii_s = raw.translate(_DEVANAGARI_TO_ASCII)
@@ -283,31 +298,13 @@ def _format_age_band_value(raw: Any) -> tuple[Any, bool]:
     if m_as:
         age_val = int(m_as.group(2))
         if -5 <= age_val <= 125:
-            return f"{m_as.group(1)}{age_band(age_val)}{m_as.group(3)}", True
+            return f"{m_as.group(1)}{_band_for_width(age_val)}{m_as.group(3)}", True
     m_age = re.match(r"^(\s*)(-?\d+)(\s*(?:Y(?:rs?|ears?)?|वर्ष)?\s*)$", ascii_s, flags=re.IGNORECASE)
     if m_age:
         age_val = int(m_age.group(2))
         if -5 <= age_val <= 125:
-            return f"{m_age.group(1)}{age_band(age_val)}{m_age.group(3)}", True
+            return f"{m_age.group(1)}{_band_for_width(age_val)}{m_age.group(3)}", True
     return raw, False
-
-
-# --------------------------------------------------------------------------- detection
-# TODO(team): this is the part that wins or loses the event. Ideas, in rough order of value:
-#   * column-aware rules: a column named like a name/phone/address is PII whatever it contains
-#     (but expect renamed columns on hidden data: "Patient's Name", "Gram/Mohalla", ...);
-#   * a name gazetteer in Latin AND Devanagari, transliteration (Mohammad/Mohd/Md./मोहम्मद),
-#     honorifics (ji, sahab, didi, श्री), relatives (S/o, D/o, W/o, C/O <name>);
-#   * the meaning traps: "C/O fever" is a complaint, "Dr. Ramesh" stays, "Dolo 650", "5 mg",
-#     "1-0-1" are doses, "Parkinson's disease" is not a person;
-#   * JSON keys, CSV headers, file names and base64 attachments can all hold PII.
-PATTERNS = [
-    ("PHONE", re.compile(r"(?<!\d)(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}(?!\d)")),
-    ("AADHAAR", re.compile(r"(?<!\d)\d{4}[\s-]?\d{4}[\s-]?\d{4}(?!\d)")),
-    ("EMAIL", re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")),
-    ("PAN", re.compile(r"\b[A-Z]{5}\d{4}[A-Z]\b")),
-    ("NAME", re.compile(r"(?i)(?<=name:)\s*[^\n,;|]+")),
-]
 
 
 class Stats:
@@ -318,48 +315,241 @@ class Stats:
     suppressed = 0
 
 
-def clean_text(text: str) -> str:
-    """Replace detected identifiers with typed placeholders. TODO(team): much more than regex."""
-    for kind, rx in PATTERNS:
-        text, n = rx.subn(f"[{kind}]" if kind != "NAME" else " [NAME]", text)
-        Stats.identifiers += n
+# --------------------------------------------------------------------------- I/O & quarantine
+_SAFE_CP1252_BYTES = frozenset({
+    0x80, 0x85, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x99,
+    0xA0, 0xA7, 0xA9, 0xAE, 0xB0, 0xB1, 0xB2, 0xB3, 0xB5, 0xB6, 0xB7, 0xD7, 0xF7,
+})
+_MAX_JSON_DEPTH = 64
+
+
+def _decode_with_encoding(raw: bytes) -> tuple[str | None, str]:
+    if raw.startswith(b"\xef\xbb\xbf"):
+        try:
+            return raw[3:].decode("utf-8", errors="strict"), "utf-8-bom"
+        except UnicodeDecodeError:
+            return None, "error"
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        if len(raw) % 2 != 0:
+            return None, "error"
+        try:
+            return raw.decode("utf-16"), "utf-16"
+        except UnicodeError:
+            return None, "error"
+    for enc in ("utf-8", "cp1252"):
+        try:
+            return raw.decode(enc), enc
+        except UnicodeDecodeError:
+            continue
+    return None, "error"
+
+
+def decode(raw: bytes) -> str | None:
+    text, _ = _decode_with_encoding(raw)
     return text
 
 
-def clean_value(v):
-    if isinstance(v, str):
-        return clean_text(v)
-    if isinstance(v, list):
-        return [clean_value(x) for x in v]
-    if isinstance(v, dict):
-        # JSON keys can be PII too (for example a dict keyed by patient name)
-        return {clean_text(k): clean_value(x) for k, x in v.items()}
-    return v  # numbers, booleans, null keep their type
+def _has_corrupt_bytes(raw: bytes, decoded: str, encoding: str) -> bool:
+    """Detect NUL/control bytes, replacement chars, or binary noise in fallback text."""
+    if "\x00" in decoded or "\ufffd" in decoded:
+        return True
+    for ch in decoded:
+        oc = ord(ch)
+        if (oc < 32 and ch not in ("\t", "\n", "\r")) or oc == 0x7F or (0x80 <= oc <= 0x9F):
+            return True
+    if encoding == "cp1252":
+        if b"\xff\xfe" in raw or b"\xfe\xff" in raw:
+            return True
+        n = len(raw)
+        for i, b in enumerate(raw):
+            if b < 0x80:
+                continue
+            if b in (0xFE, 0xFF):
+                return True
+            if b not in _SAFE_CP1252_BYTES:
+                prev_high = i > 0 and raw[i - 1] >= 0x80
+                next_high = i + 1 < n and raw[i + 1] >= 0x80
+                if prev_high or next_high:
+                    return True
+                if b >= 0xC0:
+                    prev_alpha = i > 0 and (65 <= raw[i - 1] <= 90 or 97 <= raw[i - 1] <= 122)
+                    next_alpha = i + 1 < n and (65 <= raw[i + 1] <= 90 or 97 <= raw[i + 1] <= 122)
+                    if not (prev_alpha or next_alpha):
+                        return True
+    return False
 
 
-# --------------------------------------------------------------------------- linkage
-def link_records(_record_text: str):
-    """Return a canonical patient key for a record, or None when the evidence is too weak.
-
-    TODO(team): blocking + fuzzy/phonetic + cross-script matching across ALL files, then cluster
-    without transitive over-merging. Two different people with the same name must stay apart.
-    A wrong link costs more than no link, so the starter links nothing.
-    """
-    return None
-
-
-# --------------------------------------------------------------------------- I/O
-def decode(raw: bytes) -> str | None:
-    if raw.startswith(b"\xef\xbb\xbf"):
-        return raw[3:].decode("utf-8", errors="strict")
-    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return raw.decode("utf-16")
-    for enc in ("utf-8", "cp1252"):
-        try:
-            return raw.decode(enc)
-        except UnicodeDecodeError:
+def _json_exceeds_depth(text: str, max_depth: int = _MAX_JSON_DEPTH) -> bool:
+    """Iteratively verify JSON structural nesting depth without recursion."""
+    depth = 0
+    in_str = False
+    esc = False
+    for ch in text:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
             continue
-    return None
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            depth += 1
+            if depth > max_depth:
+                return True
+        elif ch in "}]":
+            if depth > 0:
+                depth -= 1
+    return False
+
+
+def _validate_and_decode_input(raw: bytes, ext: str, max_json_depth: int = _MAX_JSON_DEPTH) -> str:
+    """Validate format/encoding/depth structurally before parsing."""
+    if ext not in (".csv", ".tsv", ".json", ".txt"):
+        raise ValueError("unsupported_format")
+    if not raw.strip():
+        raise ValueError("empty_file")
+    text, enc = _decode_with_encoding(raw)
+    if text is None or _has_corrupt_bytes(raw, text, enc):
+        raise ValueError("corrupt_bytes")
+    stripped = text.lstrip()
+    if ext in (".csv", ".tsv") and (
+        stripped.startswith(("{", "[")) or stripped.lower().startswith(("<?xml", "<!doctype"))
+    ):
+        raise ValueError("mislabeled_format")
+    if ext == ".json" and _json_exceeds_depth(text, max_depth=max_json_depth):
+        raise ValueError("excessive_depth")
+    return text
+
+
+_DIST_KEYS = frozenset({"district", "jila", "dist", "zilla"})
+_TEHSIL_KEYS = frozenset({"tehsil", "tahsil", "sub_district", "subdistrict", "taluka", "taluk"})
+
+
+def _norm_col_key(header: str) -> str:
+    cleaned = re.sub(r"\([^)]*\)", "", header.replace("\x00", "").replace("\ufeff", ""))
+    return re.sub(r"[^a-z0-9]+", "_", cleaned.lower()).strip("_")
+
+
+def _extract_geo_from_mapping(node: Any) -> tuple[str, str]:
+    """Extract first non-empty (district, tehsil) pair from a flat or nested record dict."""
+    dist = teh = ""
+    if not isinstance(node, dict):
+        return dist, teh
+    for k, v in node.items():
+        lk = _norm_col_key(str(k))
+        if lk in ("_export_meta", "facility"):
+            continue
+        if isinstance(v, str):
+            val = v.strip()
+            if val:
+                if lk in _DIST_KEYS and not dist:
+                    dist = val
+                elif lk in _TEHSIL_KEYS and not teh:
+                    teh = val
+        elif isinstance(v, dict):
+            sub_d, sub_t = _extract_geo_from_mapping(v)
+            if sub_d and not dist:
+                dist = sub_d
+            if sub_t and not teh:
+                teh = sub_t
+        elif isinstance(v, list):
+            for elem in v:
+                if isinstance(elem, dict):
+                    sub_d, sub_t = _extract_geo_from_mapping(elem)
+                    if sub_d and not dist:
+                        dist = sub_d
+                    if sub_t and not teh:
+                        teh = sub_t
+                if dist and teh:
+                    break
+        if dist and teh:
+            break
+    return dist, teh
+
+
+def _norm_geo_token(val: str) -> str:
+    if not val:
+        return ""
+    lat = devanagari_to_latin(val).lower()
+    return phonetic_skeleton(lat).replace(" ", "").replace("y", "")
+
+
+def _compute_kanon_policies(
+    resolver: IdentityResolver,
+    qi_by_loc: dict[tuple[str, str], tuple[str, str]],
+    min_group_size: int,
+) -> dict[str, tuple[bool, bool]]:
+    """Compute per-pid (suppress_tehsil, widen_age_band) flags via k-anonymity cohort counts."""
+    if min_group_size <= 1:
+        return {}
+
+    pid_profile: dict[str, dict[str, Any]] = {}
+    for idx, rec in enumerate(resolver.records):
+        loc_key = (rec.relpath, rec.loc)
+        pid = resolver.get_patient_id(rec.relpath, rec.loc)
+        if pid is None:
+            continue
+        norm = resolver.normalized[idx] if idx < len(resolver.normalized) else None
+        raw_dist, raw_teh = qi_by_loc.get(loc_key, ("", ""))
+        age_val = rec.age if rec.age is not None else (norm.age_approx if norm is not None else None)
+        if age_val is None and norm is not None and norm.dob_iso:
+            ref_year = 2026
+            for ev in rec.event_dates or ():
+                m_yr = re.search(r"\b((?:19|20)\d{2})\b", ev)
+                if m_yr:
+                    ref_year = int(m_yr.group(1))
+                    break
+            approx = ref_year - int(norm.dob_iso[:4])
+            if 0 <= approx <= 125:
+                age_val = approx
+        gender_val = rec.gender or (norm.gender if norm is not None else None) or ""
+        prof = pid_profile.setdefault(pid, {"dist": "", "teh": "", "gender": "", "age": None})
+        if raw_dist and not prof["dist"]:
+            prof["dist"] = _norm_geo_token(raw_dist)
+        if raw_teh and not prof["teh"]:
+            prof["teh"] = _norm_geo_token(raw_teh)
+        if gender_val and not prof["gender"]:
+            prof["gender"] = gender_val
+        if age_val is not None and prof["age"] is None:
+            prof["age"] = age_val
+
+    base_w = max(int(POLICY.get("age_band_years", 5)), 1)
+
+    def _band_key(age_v: int | None) -> str:
+        if age_v is None:
+            return ""
+        lo = (age_v // base_w) * base_w
+        return f"{lo}-{lo + base_w - 1}"
+
+    full_counts = Counter(
+        (p["dist"], p["teh"], p["gender"], _band_key(p["age"]))
+        for p in pid_profile.values()
+    )
+    sup_teh_pids = {
+        pid
+        for pid, p in pid_profile.items()
+        if full_counts[(p["dist"], p["teh"], p["gender"], _band_key(p["age"]))] < min_group_size
+    }
+
+    relaxed_counts = Counter(
+        (
+            p["dist"],
+            "__SUPPRESSED__" if pid in sup_teh_pids else p["teh"],
+            p["gender"],
+            _band_key(p["age"]),
+        )
+        for pid, p in pid_profile.items()
+    )
+    policies: dict[str, tuple[bool, bool]] = {}
+    for pid in sup_teh_pids:
+        p = pid_profile[pid]
+        k_relaxed = (p["dist"], "__SUPPRESSED__", p["gender"], _band_key(p["age"]))
+        widen_age = relaxed_counts[k_relaxed] < min_group_size
+        policies[pid] = (True, widen_age)
+    return policies
 
 
 def _is_json_doc(data: Any) -> bool:
@@ -376,7 +566,11 @@ def _is_json_doc(data: Any) -> bool:
 
 
 def _register_file_records(
-    text: str, ext: str, rel: str, resolver: IdentityResolver
+    text: str,
+    ext: str,
+    rel: str,
+    resolver: IdentityResolver,
+    qi_by_loc: dict[tuple[str, str], tuple[str, str]] | None = None,
 ) -> None:
     """Pass 1 helper: extract raw record identities matching Pass 2 locators."""
     if ext in (".csv", ".tsv"):
@@ -386,11 +580,19 @@ def _register_file_records(
         header, body = rows[0], rows[1:]
         for i, row in enumerate(body):
             row_dict = {header[j]: row[j] if j < len(row) else "" for j in range(len(header))}
-            resolver.add_record(rel, f"row:{i}", row_dict)
+            loc = f"row:{i}"
+            resolver.add_record(rel, loc, row_dict)
+            if qi_by_loc is not None:
+                qi_by_loc[(rel, loc)] = _extract_geo_from_mapping(row_dict)
     elif ext == ".json":
+        if _json_exceeds_depth(text):
+            raise ValueError("excessive_depth")
         data = json.loads(text)
         if _is_json_doc(data):
-            resolver.add_record(rel, "doc", data if isinstance(data, dict) else {})
+            doc_dict = data if isinstance(data, dict) else {}
+            resolver.add_record(rel, "doc", doc_dict)
+            if qi_by_loc is not None:
+                qi_by_loc[(rel, "doc")] = _extract_geo_from_mapping(doc_dict)
         else:
             meta: dict[str, Any] = {}
             if isinstance(data.get("_export_meta"), dict):
@@ -402,7 +604,10 @@ def _register_file_records(
                     pointer_key = k.replace("~", "~0").replace("/", "~1")
                     for i, item in enumerate(v):
                         fields = {**meta, **item} if meta else item
-                        resolver.add_record(rel, f"/{pointer_key}/{i}", fields)
+                        loc = f"/{pointer_key}/{i}"
+                        resolver.add_record(rel, loc, fields)
+                        if qi_by_loc is not None:
+                            qi_by_loc[(rel, loc)] = _extract_geo_from_mapping(item)
     else:
         resolver.add_record(rel, "doc", {}, text)
 
@@ -415,6 +620,7 @@ def process_csv(
     records: list,
     resolver: IdentityResolver,
     gazetteer: dict[str, Any],
+    kanon_policies: dict[str, tuple[bool, bool]] | None = None,
 ) -> str:
     rows = list(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter))
     if not rows:
@@ -488,6 +694,8 @@ def process_csv(
             role = "insurance"
         elif any(k in norm_h for k in ("note", "remark", "comment")):
             role = "freetext"
+        elif norm_key_clean in _TEHSIL_KEYS or "tehsil" in norm_h or "tahsil" in norm_h:
+            role = "tehsil"
         else:
             role = "medical"
         col_roles.append(role)
@@ -509,10 +717,14 @@ def process_csv(
         loc = f"row:{i}"
         pid = resolver.get_patient_id(rel, loc)
         shift_days = resolver.get_date_shift_days(rel, loc)
+        suppress_teh, widen_age = (
+            (kanon_policies or {}).get(pid, (False, False)) if pid is not None else (False, False)
+        )
         records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
         Stats.records += 1
         Stats.linked += pid is not None
         row_generalized = False
+        row_suppressed = False
 
         out_row = []
         for j, c in enumerate(row):
@@ -537,6 +749,12 @@ def process_csv(
             elif role == "village":
                 Stats.identifiers += 1
                 out_row.append("[VILLAGE]")
+            elif role == "tehsil":
+                if suppress_teh:
+                    out_row.append("[SUPPRESSED]")
+                    row_suppressed = True
+                else:
+                    out_row.append(c)
             elif role == "pin":
                 Stats.identifiers += 1
                 out_row.append("[PIN]")
@@ -571,9 +789,12 @@ def process_csv(
                 out_row.append(shifted)
             elif role in ("age", "age_sex"):
                 if pid is not None:
-                    banded, ok = _format_age_band_value(c)
+                    band_w = max(int(POLICY.get("age_band_years", 5)) * 2, 10) if widen_age else None
+                    banded, ok = _format_age_band_value(c, band_years=band_w)
                     if ok:
                         row_generalized = True
+                        if widen_age:
+                            row_suppressed = True
                     out_row.append(str(banded))
                 else:
                     out_row.append(c)
@@ -586,6 +807,8 @@ def process_csv(
                 out_row.append(c)
         if row_generalized:
             Stats.generalized += 1
+        if row_suppressed:
+            Stats.suppressed += 1
         w.writerow(out_row)
     return buf.getvalue()
 
@@ -618,27 +841,42 @@ def _generalize_json_record(
     pid: str | None,
     shift_days: int | None,
     date_order: str | None = None,
+    suppress_tehsil: bool = False,
+    widen_age: bool = False,
+    sup_out: list[bool] | None = None,
 ) -> bool:
-    """Apply age banding and date shifting in-place to structured JSON record keys."""
+    """Apply age banding, tehsil k-anonymity suppression, and date shifting in-place."""
     if not isinstance(node, dict):
         return False
     changed = False
     for k, v in list(node.items()):
         lk = re.sub(r"[\s-]+", "_", str(k).strip().lower())
         if isinstance(v, dict):
-            if lk == "_export_meta":
+            if lk in ("_export_meta", "facility"):
                 continue
-            if _generalize_json_record(v, pid, shift_days, date_order):
+            if _generalize_json_record(
+                v, pid, shift_days, date_order, suppress_tehsil, widen_age, sup_out
+            ):
                 changed = True
         elif isinstance(v, list):
             for elem in v:
-                if _generalize_json_record(elem, pid, shift_days, date_order):
+                if _generalize_json_record(
+                    elem, pid, shift_days, date_order, suppress_tehsil, widen_age, sup_out
+                ):
                     changed = True
+        elif pid is not None and suppress_tehsil and _norm_col_key(str(k)) in _TEHSIL_KEYS and isinstance(v, str) and v.strip():
+            node[k] = "[SUPPRESSED]"
+            changed = True
+            if sup_out is not None:
+                sup_out[0] = True
         elif pid is not None and lk in ("age", "umar", "age_sex", "age_gender"):
-            banded, ok = _format_age_band_value(v)
+            band_w = max(int(POLICY.get("age_band_years", 5)) * 2, 10) if widen_age else None
+            banded, ok = _format_age_band_value(v, band_years=band_w)
             if ok:
                 node[k] = banded
                 changed = True
+                if widen_age and sup_out is not None:
+                    sup_out[0] = True
         elif shift_days is not None and isinstance(v, str) and (
             lk in _JSON_DATE_KEYS or lk.endswith("_date")
         ):
@@ -707,16 +945,21 @@ def process_json(
     records: list,
     resolver: IdentityResolver,
     gazetteer: dict[str, Any],
+    kanon_policies: dict[str, tuple[bool, bool]] | None = None,
 ) -> str:
     data = json.loads(text)
     if _is_json_doc(data):  # FHIR Bundle, single-patient report, or single object
         loc = "doc"
         pid = resolver.get_patient_id(rel, loc)
         shift_days = resolver.get_date_shift_days(rel, loc)
+        suppress_teh, widen_age = (
+            (kanon_policies or {}).get(pid, (False, False)) if pid is not None else (False, False)
+        )
         records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
         Stats.records += 1
         Stats.linked += pid is not None
         doc_generalized = False
+        sup_out = [False]
 
         if isinstance(data, dict) and data.get("resourceType") == "Bundle":
             if "meta" in data and isinstance(data["meta"], dict) and "source" in data["meta"]:
@@ -824,21 +1067,29 @@ def process_json(
                     Stats.identifiers += 1
             if "remarks" in data and isinstance(data["remarks"], str):
                 data["remarks"] = redact_text(data["remarks"], gazetteer)
-            if _generalize_json_record(data, pid, shift_days):
+            if _generalize_json_record(
+                data, pid, shift_days, suppress_tehsil=suppress_teh, widen_age=widen_age, sup_out=sup_out
+            ):
                 doc_generalized = True
         elif isinstance(data, dict) and "attachment" in data and isinstance(data["attachment"], dict):
             att = data["attachment"]
             if "data" in att and isinstance(att["data"], str):
                 att["data"] = sanitize_base64_string(att["data"], gazetteer)
-            if _generalize_json_record(data, pid, shift_days):
+            if _generalize_json_record(
+                data, pid, shift_days, suppress_tehsil=suppress_teh, widen_age=widen_age, sup_out=sup_out
+            ):
                 doc_generalized = True
         else:
             data = clean_json_value(data, gazetteer, pid)
-            if _generalize_json_record(data, pid, shift_days):
+            if _generalize_json_record(
+                data, pid, shift_days, suppress_tehsil=suppress_teh, widen_age=widen_age, sup_out=sup_out
+            ):
                 doc_generalized = True
 
         if doc_generalized:
             Stats.generalized += 1
+        if sup_out[0]:
+            Stats.suppressed += 1
     else:
         if isinstance(data, dict) and "visits" in data and isinstance(data["visits"], list):
             if "_export_meta" in data and isinstance(data["_export_meta"], dict):
@@ -851,6 +1102,9 @@ def process_json(
                 loc = f"/visits/{i}"
                 pid = resolver.get_patient_id(rel, loc)
                 shift_days = resolver.get_date_shift_days(rel, loc)
+                suppress_teh, widen_age = (
+                    (kanon_policies or {}).get(pid, (False, False)) if pid is not None else (False, False)
+                )
                 records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
                 Stats.records += 1
                 Stats.linked += pid is not None
@@ -876,13 +1130,21 @@ def process_json(
                     if "hospital_uhid" in v["patient"]:
                         v["patient"]["hospital_uhid"] = pid if pid is not None else "[MRN]"
                         Stats.identifiers += 1
-                if _generalize_json_record(v, pid, shift_days, visit_order):
+                sup_out = [False]
+                if _generalize_json_record(
+                    v, pid, shift_days, visit_order, suppress_tehsil=suppress_teh, widen_age=widen_age, sup_out=sup_out
+                ):
                     Stats.generalized += 1
+                if sup_out[0]:
+                    Stats.suppressed += 1
         elif isinstance(data, dict) and "patients" in data and isinstance(data["patients"], list):
             for i, p in enumerate(data["patients"]):
                 loc = f"/patients/{i}"
                 pid = resolver.get_patient_id(rel, loc)
                 shift_days = resolver.get_date_shift_days(rel, loc)
+                suppress_teh, widen_age = (
+                    (kanon_policies or {}).get(pid, (False, False)) if pid is not None else (False, False)
+                )
                 records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
                 Stats.records += 1
                 Stats.linked += pid is not None
@@ -911,12 +1173,17 @@ def process_json(
                     p["ids"]["aadhar_no"] = "[AADHAAR]"
                     p["ids"]["abha"] = "[ABHA_NUMBER]"
                     Stats.identifiers += 2
-                row_gen = _generalize_json_record(p, pid, shift_days)
+                sup_out = [False]
+                row_gen = _generalize_json_record(
+                    p, pid, shift_days, suppress_tehsil=suppress_teh, widen_age=widen_age, sup_out=sup_out
+                )
                 if "dob" in p and shift_days is None:
                     p["dob"] = "[DOB]"
                     Stats.identifiers += 1
                 if row_gen:
                     Stats.generalized += 1
+                if sup_out[0]:
+                    Stats.suppressed += 1
         else:
             for k, v in list(data.items()):
                 if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
@@ -928,12 +1195,26 @@ def process_json(
                         loc = f"/{pointer_key}/{i}"
                         pid = resolver.get_patient_id(rel, loc)
                         shift_days = resolver.get_date_shift_days(rel, loc)
+                        suppress_teh, widen_age = (
+                            (kanon_policies or {}).get(pid, (False, False)) if pid is not None else (False, False)
+                        )
                         records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": pid})
                         Stats.records += 1
                         Stats.linked += pid is not None
                         cleaned_item = clean_json_value(item, gazetteer, pid)
-                        if _generalize_json_record(cleaned_item, pid, shift_days, list_order):
+                        sup_out = [False]
+                        if _generalize_json_record(
+                            cleaned_item,
+                            pid,
+                            shift_days,
+                            list_order,
+                            suppress_tehsil=suppress_teh,
+                            widen_age=widen_age,
+                            sup_out=sup_out,
+                        ):
                             Stats.generalized += 1
+                        if sup_out[0]:
+                            Stats.suppressed += 1
                         v[i] = cleaned_item
                 elif k != "_export_meta":
                     data[k] = clean_json_value(v, gazetteer)
@@ -1079,20 +1360,20 @@ def main() -> int:
 
     # Pass 1: collect and resolve identities across all parseable files before redaction.
     resolver = IdentityResolver(pseudonym_fn=pseudonym, date_shift_fn=date_shift_days)
+    qi_by_loc: dict[tuple[str, str], tuple[str, str]] = {}
     for path in psn_map_paths:
         rel = path.relative_to(inp).as_posix()
         raw = path.read_bytes()
         ext = path.suffix.lower()
         try:
-            if ext not in (".csv", ".tsv", ".json", ".txt") or not raw.strip():
-                continue
-            text = decode(raw)
-            if text is None:
-                continue
-            _register_file_records(text, ext, rel, resolver)
+            text = _validate_and_decode_input(raw, ext)
+            _register_file_records(text, ext, rel, resolver, qi_by_loc=qi_by_loc)
         except (ValueError, RecursionError, UnicodeError, csv.Error):
             continue
     resolver.resolve_all()
+    kanon_policies = _compute_kanon_policies(
+        resolver, qi_by_loc, int(POLICY.get("min_group_size", 5))
+    )
 
     gazetteer = build_pii_gazetteer(resolver.records)
 
@@ -1106,27 +1387,30 @@ def main() -> int:
         entry: dict[str, str | None] = {"input_sha256": hashlib.sha256(raw).hexdigest()}
         ext = path.suffix.lower()
         try:
-            if ext not in (".csv", ".tsv", ".json", ".txt"):
-                raise ValueError("unsupported_format")
-            if not raw.strip():
-                raise ValueError("empty_file")
-            # Quarantine mislabeled / corrupt attacks safely
-            if ext in (".csv", ".tsv") and raw.strip().startswith(b"{"):
-                raise ValueError("mislabeled_format")
-            if b"\xff\xfe\xc3" in raw:
-                raise ValueError("corrupt_bytes")
-            if b'{"level":' in raw and raw.count(b'{"level":') > 20:
-                raise ValueError("excessive_depth")
-
-            text = decode(raw)
-            if text is None:
-                raise ValueError("undecodable_text")
+            text = _validate_and_decode_input(raw, ext)
 
             out_rel = sanitize_filename(rel, gazetteer)
             if ext in (".csv", ".tsv"):
-                result = process_csv(text, "\t" if ext == ".tsv" else ",", rel, out_rel, records, resolver, gazetteer)
+                result = process_csv(
+                    text,
+                    "\t" if ext == ".tsv" else ",",
+                    rel,
+                    out_rel,
+                    records,
+                    resolver,
+                    gazetteer,
+                    kanon_policies=kanon_policies,
+                )
             elif ext == ".json":
-                result = process_json(text, rel, out_rel, records, resolver, gazetteer)
+                result = process_json(
+                    text,
+                    rel,
+                    out_rel,
+                    records,
+                    resolver,
+                    gazetteer,
+                    kanon_policies=kanon_policies,
+                )
             else:
                 result = process_text(text, rel, out_rel, records, resolver, gazetteer)
             dest = san / out_rel
@@ -1136,7 +1420,14 @@ def main() -> int:
         # pyrefly: ignore[unreachable-except-clause]
         except (ValueError, RecursionError, UnicodeError, csv.Error, json.JSONDecodeError) as exc:
             # Fail safe: never copy what we could not clean. The reason holds no file content.
-            reason = str(exc) if isinstance(exc, ValueError) and str(exc).isidentifier() else type(exc).__name__
+            if isinstance(exc, RecursionError):
+                reason = "excessive_depth"
+            elif isinstance(exc, UnicodeError):
+                reason = "corrupt_bytes"
+            elif isinstance(exc, ValueError) and str(exc).isidentifier():
+                reason = str(exc)
+            else:
+                reason = type(exc).__name__
             entry.update(output=None, status="quarantined", reason=reason)
         files.append(entry)
 

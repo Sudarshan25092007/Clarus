@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Generate the official 2-page Project Brief PDF for Team Clarus (Secret Wards)."""
 from pathlib import Path
+# pyrefly: ignore[missing-import]
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfgen import canvas

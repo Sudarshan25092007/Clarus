@@ -165,19 +165,23 @@ class Phase7Pass2WiringTests(unittest.TestCase):
 
     def test_age_banding_and_clinical_preservation(self) -> None:
         self.assertGreater(self.report["counts"]["records_generalized"], 600)
+        self.assertGreater(self.report["counts"]["records_suppressed"], 0)
 
         snj_rows = list(csv.reader(io.StringIO(self._out_path("registration/sanjeevani_registration.csv").read_text(encoding="utf-8"), newline="")))
-        self.assertEqual(snj_rows[18][3], "35-39")
+        self.assertEqual(snj_rows[18][3], "30-39")
+        self.assertEqual(snj_rows[18][9], "[SUPPRESSED]")
+        self.assertEqual(snj_rows[18][10], "Sitapur")
 
         jjh_rows = list(csv.reader(io.StringIO(self._out_path("registration/jeevanjyoti_patients.tsv").read_text(encoding="utf-8"), newline=""), delimiter="\t"))
-        self.assertEqual(jjh_rows[1][3], "45-49 वर्ष")
+        self.assertEqual(jjh_rows[1][3], "40-49 वर्ष")
+        self.assertEqual(jjh_rows[1][8], "[SUPPRESSED]")
 
         city_rows = list(csv.reader(io.StringIO(self._out_path("lab/city_results.csv").read_text(encoding="utf-8"), newline="")))
-        self.assertEqual(city_rows[1][2], "65-69/F")
+        self.assertEqual(city_rows[1][2], "60-69/F")
         self.assertEqual(city_rows[1][6], "13.5")
 
         lab_rep = json.loads(self._out_path("lab/9368591915_report_0032.json").read_text(encoding="utf-8"))
-        self.assertEqual(lab_rep["patient"]["age"], "40-44")
+        self.assertEqual(lab_rep["patient"]["age"], "40-49")
         self.assertEqual(lab_rep["panels"][0]["results"][0]["value"], 13.6)
 
         wa_txt = self._out_path("lab/whatsapp_forward_0003.txt").read_text(encoding="utf-8")

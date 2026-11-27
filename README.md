@@ -39,29 +39,9 @@ Patient records across disparate hospital silos (Sanjeevani, Jeevan Jyoti, Arogy
 
 Clarus executes as a two-pass decoupled pipeline that eliminates inter-file order bias and avoids state mutation:
 
-```
-dev/input/ (200 files: CSV, TSV, JSON, TXT)
-    │
-    ▼
-[Pass 1: Global Discovery & Identity Linkage]
-    ├── Multi-Encoding Stream Decoders (ASCII, UTF-8, UTF-8-BOM, UTF-16LE/BE, CP1252)
-    ├── Cross-Hospital Entity Extractor (UHIDs, Phones, Names, Relatives, Addresses)
-    ├── 3-Key Orthogonal Blocking (UHID, Normalized Phone, Soundex/Prefix)
-    ├── None-Safe Pairwise Feature Engine & Household Guards
-    ├── Score-Ordered Constrained Union-Find (Lazy Anti-Transitivity Verification)
-    └── Global In-Memory PII Gazetteer Construction
-    │
-    ▼
-[Pass 2: Sanitization & Export]
-    ├── Deterministic Keyed HMAC-SHA256 Pseudonym Assignment (PSN-XXXXXX)
-    ├── Per-Patient Uniform Date Shifting (HMAC-keyed delta, preserving stay duration)
-    ├── Bounded Mask-and-Restore Clinical Shield (__SHIELD_i__ tokens)
-    ├── Multi-Channel PII Redactor (Content, Filenames, Headers, JSON Keys, Base64)
-    └── Safe Quarantine Engine (Non-revealing error codes)
-    │
-    ▼
-sanitized/ (192 clean files) + records.jsonl (821 records) + report.json (raksha-report/1)
-```
+<div align="center">
+  <img src="docs/assets/flow-chart.png" alt="Clarus 2-Pass architecture and flowchart" width="90%">
+</div>
 
 ---
 
@@ -80,7 +60,7 @@ sanitized/ (192 clean files) + records.jsonl (821 records) + report.json (raksha
   3. Relative name + relation + gender.
   *(Safety Invariant: Never blocks on UHID alone, as UHIDs are hospital-scoped rather than globally unique).*
 - **None-Safe Pairwise Features:** Computes exact phone agreement, Devanagari-to-Latin transliteration Jaro-Winkler similarity, age delta bounds (|Δage| ≤ 2), and relative name concordance.
-- **Asymmetric Decision Engine with Household Guards:** Implements strict contradiction vetoes (explicit gender mismatch, age difference > 15 years). A dedicated **shared-phone household guard** isolates family members who share a mobile number unless first names or relative cues corroborate identity.
+- **Asymmetric Decision Engine with Household Guards:** Implements strict contradiction vetoes (explicit gender mismatch, age difference > 3 years unless exact DOB matches). A dedicated **shared-phone household guard** isolates family members who share a mobile number unless first names or relative cues corroborate identity.
 - **Score-Ordered Constrained Union-Find:** Clusters candidate edges by descending decision confidence, enforcing lazy anti-transitivity conflict checks before merging sets: if patient A matches B and B matches C, but A and C possess a hard negative contradiction, the merge is vetoed. Result: **0 false merges** across all evaluations.
 - **Keyed HMAC-SHA256 Pseudonyms:** Maps each canonical cluster to Crockford Base32 tokens (`PSN-XXXXXX`) keyed with `RAKSHA_SECRET`, guaranteeing non-invertible, cross-file pseudonym consistency.
 
@@ -103,7 +83,7 @@ sanitized/ (192 clean files) + records.jsonl (821 records) + report.json (raksha
   - Names embedded in non-standard filenames without discharge prefixes.
   - Ambiguous time logs and caller/attendant free-text narratives.
   - Single-token boundary guards protecting clinical words (*Asha worker*, *Ward*).
-- **Total Test Suite:** **50 / 50 unit tests passing** across the repository in ~10.9s.
+- **Total Test Suite:** **77 / 77 unit tests passing** across the repository.
 
 ---
 
@@ -136,7 +116,7 @@ The following metrics were measured on the official practice dataset (`dev/input
 - **DPDP Act 2023 & DPDP Rules 2025:** Architecturally informed by Rule 6 security safeguards (obfuscation, in-memory secret handling, and PII-free operational logging) and Rule 16 / Schedule II research anonymization concepts. Encryption-at-rest is designated for Phase 2 implementation.
 - **ABDM FHIR R4 IG v6.5.0:** Structural preservation of FHIR Document Bundles (Discharge Summaries, Diagnostic Reports, Prescriptions) while stripping direct identifiers (`meta.source`, `subject.display`, `identifier` values).
 - **Zero-Secret Persistence:** `RAKSHA_SECRET` is held purely in volatile memory. It is never logged, persisted, or leaked to outputs. Repeated runs with the same secret yield byte-identical outputs; different secrets yield unlinkable pseudonyms.
-- **Quasi-Identifier Policy & Roadmap:** Per-patient date shifting (`date_shift_max_days: 180`) and 5-year age banding (`age_band_years: 5`) are active in the pipeline. Note: `min_group_size: 5` in [`config/policy.yaml`](config/policy.yaml) is a documented policy target currently marked TODO; rare-group suppression and formal k-anonymity resistance are designated for Phase 2.
+- **Quasi-Identifier Policy & Enforcement:** Per-patient date shifting (`date_shift_max_days: 180`), 5-year age banding (`age_band_years: 5`), and k-anonymity cohort enforcement (`min_group_size: 5` in [`config/policy.yaml`](config/policy.yaml)) are active in the pipeline: cohorts with fewer than 5 distinct patients suppress `tehsil` (`[SUPPRESSED]`) and widen structured age bands to 10-year intervals when still below threshold.
 
 ---
 
@@ -146,11 +126,11 @@ Informed by deep research into privacy-preserving record linkage (PPRL), Indic c
 
 ### Current Limitations
 1. **Unseen Transliteration Variants:** When patient pairs lack overlapping phone numbers or UHIDs and exhibit severe transliteration noise across scripts, Clarus defaults to conservative non-merging to prevent catastrophic false merges.
-2. **Quasi-Identifier Policy Status:** The `min_group_size` parameter in `config/policy.yaml` is currently a documented specification; rare-group k-anonymity suppression is not yet enforced in production.
+2. **Quasi-Identifier Utility Trade-off:** When `min_group_size: 5` k-anonymity enforcement activates on small structured cohorts, `tehsil` is suppressed (`[SUPPRESSED]`) and structured age bands widen from 5-year to 10-year intervals; official ARX-style multi-dimensional global suppression matrices remain a Phase 2 enhancement.
 3. **Cross-Hospital Domain Shift:** Research demonstrates that within-hospital clinical de-identification models degrade significantly when transferred across institutions. Our deterministic rules and gazetteer must be evaluated on held-out multi-hospital splits.
 
 ### Engineering & ML Roadmap
-- **Phase 1 (Current Prototype):** Safe deterministic baseline: 3-key orthogonal blocking, constrained graph clustering, bounded mask-and-restore regex shield, keyed HMAC-SHA256 pseudonyms, 50-test acceptance suite.
+- **Phase 1 (Current Prototype):** Safe deterministic baseline: 3-key orthogonal blocking, constrained graph clustering, bounded mask-and-restore regex shield, keyed HMAC-SHA256 pseudonyms, k-anonymity cohort enforcement, 77-test acceptance suite.
 - **Phase 2 (Probabilistic Linkage & Indic NER):**
   - Integrate [Splink](https://github.com/moj-analytical-services/splink) (DuckDB-backed Fellegi-Sunter) for probabilistic matching on non-blocked quasi-identifiers, calibrating m/u probabilities on held-out pairs.
   - Evaluate [LibIndic Soundex](https://github.com/libindic/soundex) for phonetic blocking across Devanagari and Latin name variants.
@@ -220,7 +200,7 @@ python3 scripts/generate_brief_pdf.py
 | [`docs/PROJECT_BRIEF.pdf`](docs/PROJECT_BRIEF.pdf) | Official 2-page Project Brief PDF for competition judges |
 | [`brief/PROJECT_BRIEF_TEMPLATE.md`](brief/PROJECT_BRIEF_TEMPLATE.md) | Full markdown source of the Project Brief |
 | [`scripts/generate_brief_pdf.py`](scripts/generate_brief_pdf.py) | Automated ReportLab script generating the exact 2-page brief PDF |
-| [`tests/`](tests/) | 50 unit and acceptance tests including `test_adversarial_hidden.py` |
+| [`tests/`](tests/) | 77 unit and acceptance tests including `test_adversarial_hidden.py` |
 | [`dev/`](dev/) | Practice input dataset (`dev/input/`) and ground truth (`dev/truth/`) |
 | [`check_submission.py`](check_submission.py) | Official pre-submit validation runner (checks contract, secrets, PDF) |
 | [`check_dev.py`](check_dev.py) | Official scoring tool evaluating PII leakage, canaries, utility, and linkage |
