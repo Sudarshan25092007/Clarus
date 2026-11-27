@@ -1,6 +1,6 @@
 # Clarus: Deterministic Multi-Script Identity Resolution & Zero-Leakage Privacy Firewall
 
-**Track 3 · Secret Wards** · Team: Sudarshan Patil H J (Backend Infrastructure & Linkage Engine), Mohith (Privacy Firewall & Clinical Redaction), Evaluation & Compliance Engineer (Verification & Testing) · Repo: https://github.com/Sudarshan25092007/Clarus
+**Track 3 · Secret Wards** · Team: Sudarshan Patil H J (Backend Infrastructure & Linkage Engine), Mohit G R (Privacy Firewall & Clinical Redaction), Sagar G A (Verification, Final Tweaks & Report Preparation) · Repo: https://github.com/Sudarshan25092007/Clarus
 
 ## 1. In one paragraph
 Clarus is an ultra-fast, offline, CPU-only zero-LLM privacy firewall engineered for heterogeneous Indian healthcare data spanning 4 hospital networks, 3 languages (English, Hindi, Hinglish), and 5 modalities. It couples a **3-key orthogonal blocking and constrained graph clustering engine** (F0.5 = 1.00, 0 false merges) with a **bounded mask-and-restore clinical shield** and **multi-channel PII elimination engine** that achieves **0.0% PII leakage (0/3,230)**, eliminates **100% of planted canaries (0/4)**, and retains **100.0% of clinical medical data (4,855/4,855)** in **4.4s runtime**.
@@ -29,7 +29,7 @@ sanitized/ (192 clean files) + records.jsonl (821 records) + report.json (raksha
 ```
 
 ## 3. How it works
-- **Ingestion:** Streams CSV, TSV, JSON, and TXT files across four character encodings without third-party libraries. Malicious or broken files (corrupt bytes, excessive depth bombs, mislabeled headers) are safely quarantined with non-revealing error codes.
+- **Ingestion:** Streams CSV, TSV, JSON, and TXT files across four character encodings without third-party libraries. Malicious, hostile, or broken files (symlink directory traversals, arbitrary-key recursive depth bombs, corrupt bytes, mislabeled headers) are safely quarantined with non-revealing error codes (`symlink_traversal`, `excessive_depth`, `corrupt_bytes`, `mislabeled_format`).
 - **Detection:** Two-pass identity-driven architecture. Pass 1 extracts all patient names, relatives, phones, and UHIDs across registrations, OPD logs, and billing files into an in-memory gazetteer. Pass 2 executes bounded regex scrubbing across Latin, Devanagari numerals (`[६-९][\u0966-\u096F]{9}`), and Hinglish clinical narratives (`ka BP`, `ko bukhar hai`).
 - **Linkage & Pseudonyms:** 3-key orthogonal blocking (exact phone, name+gender, relative+relation+gender; never UHID alone) reduces candidate pairs by 99.0% (22 pairs from 2,145) with 100% candidate recall. Constrained graph clustering prevents transitive over-merging by enforcing cross-pair anti-transitivity verification before joining components. Deterministic HMAC-SHA256 assigns collision-free Crockford Base32 pseudonyms (`PSN-XXXXXX`).
 - **Privacy Layer:** Date shifts uniformly displace temporal events per-patient within `[-max, +max]`, preserving chronological stay duration. Age values are banded into 5-year cohorts. Location fields are generalized from village/mohalla to district level.
@@ -57,5 +57,5 @@ sanitized/ (192 clean files) + records.jsonl (821 records) + report.json (raksha
 ## 6. Known limitations & Roadmap
 1. Unseen transliteration variants with no phone or UHID overlap currently fall back to conservative isolation to guarantee zero false merges.
 2. Uniform per-patient date shifting preserves duration of stay but could be enhanced with differential jitter for non-clinical milestones.
-3. Rare-group k-anonymity suppression (`min_group_size: 5` in `policy.yaml`) remains a documented policy target currently marked TODO; formal k-anonymity resistance is designated for Phase 2.
+3. Rare-group quasi-identifier risk (`min_group_size: 5` in `policy.yaml`) is evaluated via equivalence class profiling (`identity_risk.py`); automated widening/suppression of sparse cohorts is scheduled for production deployment.
 

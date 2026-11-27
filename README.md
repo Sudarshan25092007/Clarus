@@ -77,13 +77,14 @@ Clarus executes as a two-pass decoupled pipeline that eliminates inter-file orde
   - *Base64 Attachments:* Decodes, scrubs, and re-encodes both standard and URL-safe base64 payloads, handling arbitrary whitespace and newline padding.
 
 ### 4. Adversarial Test Coverage ([`tests/test_adversarial_hidden.py`](tests/test_adversarial_hidden.py))
-- 23 dedicated unit tests validate system robustness against unseen evaluation attacks:
+- 28 dedicated adversarial & security unit tests validate system robustness against unseen evaluation attacks:
   - Canaries planted directly on diagnosis, complaint, prescription, and Hindi symptom lines.
   - Whitespace-padded and URL-safe base64 attachment payloads.
   - Names embedded in non-standard filenames without discharge prefixes.
   - Ambiguous time logs and caller/attendant free-text narratives.
   - Single-token boundary guards protecting clinical words (*Asha worker*, *Ward*).
-- **Total Test Suite:** **77 / 77 unit tests passing** across the repository.
+  - Symlink traversal isolation and iterative arbitrary-key JSON depth bomb blocking.
+- **Total Test Suite:** **85 / 85 unit tests passing** across the repository.
 
 ---
 
@@ -116,7 +117,8 @@ The following metrics were measured on the official practice dataset (`dev/input
 - **DPDP Act 2023 & DPDP Rules 2025:** Architecturally informed by Rule 6 security safeguards (obfuscation, in-memory secret handling, and PII-free operational logging) and Rule 16 / Schedule II research anonymization concepts. Encryption-at-rest is designated for Phase 2 implementation.
 - **ABDM FHIR R4 IG v6.5.0:** Structural preservation of FHIR Document Bundles (Discharge Summaries, Diagnostic Reports, Prescriptions) while stripping direct identifiers (`meta.source`, `subject.display`, `identifier` values).
 - **Zero-Secret Persistence:** `RAKSHA_SECRET` is held purely in volatile memory. It is never logged, persisted, or leaked to outputs. Repeated runs with the same secret yield byte-identical outputs; different secrets yield unlinkable pseudonyms.
-- **Quasi-Identifier Policy & Enforcement:** Per-patient date shifting (`date_shift_max_days: 180`), 5-year age banding (`age_band_years: 5`), and k-anonymity cohort enforcement (`min_group_size: 5` in [`config/policy.yaml`](config/policy.yaml)) are active in the pipeline: cohorts with fewer than 5 distinct patients suppress `tehsil` (`[SUPPRESSED]`) and widen structured age bands to 10-year intervals when still below threshold.
+- **Hostile Input & Quarantine Hardening:** Proactively quarantines path traversal attempts (symlinks resolving outside the input root), iterative arbitrary-key JSON depth bombs, corrupt byte sequences, and mislabeled format headers with clean non-revealing error codes (`symlink_traversal`, `excessive_depth`, `corrupt_bytes`, `mislabeled_format`).
+- **Quasi-Identifier Policy, Enforcement & Risk Evaluation:** Per-patient date shifting (`date_shift_max_days: 180`), 5-year age banding (`age_band_years: 5`), and k-anonymity cohort enforcement (`min_group_size: 5` in [`config/policy.yaml`](config/policy.yaml)) are active in the pipeline: cohorts with fewer than 5 distinct patients suppress `tehsil` (`[SUPPRESSED]`) and widen structured age bands to 10-year intervals when still below threshold. Equivalence class distributions can also be profiled via [`starter/identity_risk.py`](starter/identity_risk.py) (`compute_quasi_identifier_risk`).
 
 ---
 
@@ -126,11 +128,11 @@ Informed by deep research into privacy-preserving record linkage (PPRL), Indic c
 
 ### Current Limitations
 1. **Unseen Transliteration Variants:** When patient pairs lack overlapping phone numbers or UHIDs and exhibit severe transliteration noise across scripts, Clarus defaults to conservative non-merging to prevent catastrophic false merges.
-2. **Quasi-Identifier Utility Trade-off:** When `min_group_size: 5` k-anonymity enforcement activates on small structured cohorts, `tehsil` is suppressed (`[SUPPRESSED]`) and structured age bands widen from 5-year to 10-year intervals; official ARX-style multi-dimensional global suppression matrices remain a Phase 2 enhancement.
+2. **Quasi-Identifier Utility Trade-off:** When `min_group_size: 5` k-anonymity enforcement activates on small structured cohorts, `tehsil` is suppressed (`[SUPPRESSED]`) and structured age bands widen from 5-year to 10-year intervals (while `identity_risk.py` profiles equivalence class risk); official ARX-style multi-dimensional global suppression matrices remain a Phase 2 enhancement.
 3. **Cross-Hospital Domain Shift:** Research demonstrates that within-hospital clinical de-identification models degrade significantly when transferred across institutions. Our deterministic rules and gazetteer must be evaluated on held-out multi-hospital splits.
 
 ### Engineering & ML Roadmap
-- **Phase 1 (Current Prototype):** Safe deterministic baseline: 3-key orthogonal blocking, constrained graph clustering, bounded mask-and-restore regex shield, keyed HMAC-SHA256 pseudonyms, k-anonymity cohort enforcement, 77-test acceptance suite.
+- **Phase 1 (Current Prototype):** Safe deterministic baseline: 3-key orthogonal blocking, constrained graph clustering, bounded mask-and-restore regex shield, keyed HMAC-SHA256 pseudonyms, input symlink & depth protection, k-anonymity cohort enforcement, 85-test acceptance and adversarial suite.
 - **Phase 2 (Probabilistic Linkage & Indic NER):**
   - Integrate [Splink](https://github.com/moj-analytical-services/splink) (DuckDB-backed Fellegi-Sunter) for probabilistic matching on non-blocked quasi-identifiers, calibrating m/u probabilities on held-out pairs.
   - Evaluate [LibIndic Soundex](https://github.com/libindic/soundex) for phonetic blocking across Devanagari and Latin name variants.
@@ -169,7 +171,7 @@ python check_submission.py --repo . --run
 
 ### Run Test Suites
 ```bash
-# Run the complete 50-test suite across unit, acceptance, and adversarial cases:
+# Run the complete 85-test suite across unit, acceptance, and adversarial cases:
 python3 -m unittest discover tests
 
 # Run specific test suites:
@@ -196,12 +198,22 @@ python3 scripts/generate_brief_pdf.py
 | [`starter/main.py`](starter/main.py) | Two-pass pipeline orchestrator, streaming reader/writer, quarantine engine |
 | [`starter/identity.py`](starter/identity.py) | Multi-format identity extractor across clinical, lab, OPD, billing, and FHIR files |
 | [`starter/identity_redactor.py`](starter/identity_redactor.py) | Bounded mask-and-restore clinical shield, gazetteer builder, multi-channel PII redactor |
+| [`starter/identity_risk.py`](starter/identity_risk.py) | Quasi-identifier risk evaluation and k-anonymity equivalence class analyzer |
 | [`starter/identity_*.py`](starter/) | Linkage modules: adapters, blocking, pairwise features, decision tiers, constrained clustering |
 | [`docs/PROJECT_BRIEF.pdf`](docs/PROJECT_BRIEF.pdf) | Official 2-page Project Brief PDF for competition judges |
 | [`brief/PROJECT_BRIEF_TEMPLATE.md`](brief/PROJECT_BRIEF_TEMPLATE.md) | Full markdown source of the Project Brief |
 | [`scripts/generate_brief_pdf.py`](scripts/generate_brief_pdf.py) | Automated ReportLab script generating the exact 2-page brief PDF |
-| [`tests/`](tests/) | 77 unit and acceptance tests including `test_adversarial_hidden.py` |
+| [`tests/`](tests/) | 85 unit, acceptance, and adversarial hidden-eval tests |
 | [`dev/`](dev/) | Practice input dataset (`dev/input/`) and ground truth (`dev/truth/`) |
 | [`check_submission.py`](check_submission.py) | Official pre-submit validation runner (checks contract, secrets, PDF) |
 | [`check_dev.py`](check_dev.py) | Official scoring tool evaluating PII leakage, canaries, utility, and linkage |
+
+---
+
+## Team
+
+- **Sudarshan Patil H J** — Backend Infrastructure & Linkage Engine
+- **Mohit G R** — Privacy Firewall & Clinical Redaction / ML Owner
+- **Sagar G A** — Verification, Final Hardening Tweaks & Report Preparation
+
 

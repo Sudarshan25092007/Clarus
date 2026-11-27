@@ -379,30 +379,34 @@ def _has_corrupt_bytes(raw: bytes, decoded: str, encoding: str) -> bool:
     return False
 
 
-def _json_exceeds_depth(text: str, max_depth: int = _MAX_JSON_DEPTH) -> bool:
-    """Iteratively verify JSON structural nesting depth without recursion."""
+def check_nesting_depth(text: str, max_depth: int = 25) -> None:
+    """Scan JSON/text for nesting depth of { } and [ ] outside string literals.
+
+    Raises ValueError("excessive_depth") if depth exceeds max_depth.
+    """
     depth = 0
     in_str = False
     esc = False
     for ch in text:
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
+        if esc:
+            esc = False
+            continue
+        if ch == "\\":
+            if in_str:
                 esc = True
-            elif ch == '"':
-                in_str = False
             continue
         if ch == '"':
-            in_str = True
-        elif ch in "{[":
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch in ("{", "["):
             depth += 1
             if depth > max_depth:
-                return True
-        elif ch in "}]":
+                raise ValueError("excessive_depth")
+        elif ch in ("}", "]"):
             if depth > 0:
                 depth -= 1
-    return False
 
 
 def _validate_and_decode_input(raw: bytes, ext: str, max_json_depth: int = _MAX_JSON_DEPTH) -> str:
@@ -419,8 +423,8 @@ def _validate_and_decode_input(raw: bytes, ext: str, max_json_depth: int = _MAX_
         stripped.startswith(("{", "[")) or stripped.lower().startswith(("<?xml", "<!doctype"))
     ):
         raise ValueError("mislabeled_format")
-    if ext == ".json" and _json_exceeds_depth(text, max_depth=max_json_depth):
-        raise ValueError("excessive_depth")
+    if ext == ".json":
+        check_nesting_depth(text, max_depth=max_json_depth)
     return text
 
 
@@ -552,6 +556,35 @@ def _compute_kanon_policies(
     return policies
 
 
+def check_nesting_depth(text: str, max_depth: int = 25) -> None:
+    """Scan JSON/text for nesting depth of { } and [ ] outside string literals.
+    Raises ValueError("excessive_depth") if depth exceeds max_depth.
+    """
+    depth = 0
+    in_string = False
+    escape = False
+    for ch in text:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            if in_string:
+                escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in ("{", "["):
+            depth += 1
+            if depth > max_depth:
+                raise ValueError("excessive_depth")
+        elif ch in ("}", "]"):
+            if depth > 0:
+                depth -= 1
+
+
 def _is_json_doc(data: Any) -> bool:
     """Return True when JSON represents a single document/FHIR Bundle rather than a record list."""
     return (
@@ -585,8 +618,7 @@ def _register_file_records(
             if qi_by_loc is not None:
                 qi_by_loc[(rel, loc)] = _extract_geo_from_mapping(row_dict)
     elif ext == ".json":
-        if _json_exceeds_depth(text):
-            raise ValueError("excessive_depth")
+        check_nesting_depth(text, max_depth=_MAX_JSON_DEPTH)
         data = json.loads(text)
         if _is_json_doc(data):
             doc_dict = data if isinstance(data, dict) else {}
@@ -1356,14 +1388,21 @@ def main() -> int:
     Stats.suppressed = 0
 
     psn_map_paths = sorted(p for p in inp.rglob("*") if p.is_file())
-    sys.setrecursionlimit(5000)
 
     # Pass 1: collect and resolve identities across all parseable files before redaction.
     resolver = IdentityResolver(pseudonym_fn=pseudonym, date_shift_fn=date_shift_days)
     qi_by_loc: dict[tuple[str, str], tuple[str, str]] = {}
     for path in psn_map_paths:
+        try:
+            if path.is_symlink() or not path.resolve().is_relative_to(inp.resolve()):
+                continue
+        except (OSError, RuntimeError):
+            continue
         rel = path.relative_to(inp).as_posix()
-        raw = path.read_bytes()
+        try:
+            raw = path.read_bytes()
+        except (OSError, RuntimeError):
+            continue
         ext = path.suffix.lower()
         try:
             text = _validate_and_decode_input(raw, ext)
@@ -1383,10 +1422,22 @@ def main() -> int:
 
     for path in psn_map_paths:
         rel = path.relative_to(inp).as_posix()
-        raw = path.read_bytes()
+        is_symlink = path.is_symlink()
+        try:
+            is_escaped = not path.resolve().is_relative_to(inp.resolve())
+        except (OSError, RuntimeError):
+            is_escaped = True
+
+        try:
+            raw = path.read_bytes()
+        except (OSError, RuntimeError):
+            raw = b""
+
         entry: dict[str, str | None] = {"input_sha256": hashlib.sha256(raw).hexdigest()}
         ext = path.suffix.lower()
         try:
+            if is_symlink or is_escaped:
+                raise ValueError("symlink_traversal")
             text = _validate_and_decode_input(raw, ext)
 
             out_rel = sanitize_filename(rel, gazetteer)

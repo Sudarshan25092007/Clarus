@@ -6,13 +6,14 @@ These tests ensure that the redaction engine handles:
 3. Names in filenames without Discharge_Summary prefix
 4. Caller/attendant patterns with commas, missing parentheses, and unusual formats
 """
-import sys, os, re, base64, json, unittest
+import sys, os, re, base64, json, hashlib, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'starter'))
 
 from identity_redactor import (
     redact_text, sanitize_base64_string, sanitize_filename, clean_json_value,
     shield_text, restore_text,
 )
+from main import check_nesting_depth
 
 
 class TestShieldingBackdoor(unittest.TestCase):
@@ -168,6 +169,101 @@ class TestNarrativePatternGeneralization(unittest.TestCase):
         text = 'Address (attendant): C/O Someone, Ward 5'
         result = redact_text(text)
         self.assertNotIn('C/O Someone', result)
+
+
+class TestSymlinkTraversalDefense(unittest.TestCase):
+    """Verify input symlinks escaping inp are quarantined and never written to sanitized/."""
+
+    def test_symlink_pointing_outside_is_quarantined(self):
+        import tempfile, subprocess
+        from unittest import mock
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            inp = Path(td) / "inp"
+            inp.mkdir()
+            out = Path(td) / "out"
+            out.mkdir()
+            secret = Path(td) / "outside_secret.txt"
+            secret.write_text("SUPER_SECRET_CANARY_OUTSIDE_DIR", encoding="utf-8")
+            sym = inp / "link.txt"
+            normal = inp / "normal.txt"
+            normal.write_text("Normal clinical text.", encoding="utf-8")
+
+            try:
+                sym.symlink_to(secret)
+                used_real_symlink = True
+            except OSError:
+                sym.write_text("SUPER_SECRET_CANARY_OUTSIDE_DIR", encoding="utf-8")
+                used_real_symlink = False
+
+            if used_real_symlink:
+                env = os.environ.copy()
+                env["RAKSHA_SECRET"] = "test_secret"
+                cmd = [sys.executable, os.path.join(os.path.dirname(__file__), "..", "starter", "main.py"), "--input", str(inp), "--output", str(out)]
+                res = subprocess.run(cmd, env=env, capture_output=True, text=True)
+                self.assertEqual(res.returncode, 0)
+            else:
+                import main as starter_main
+                orig_is_symlink = Path.is_symlink
+                orig_resolve = Path.resolve
+
+                def fake_is_symlink(p_self: Path) -> bool:
+                    return p_self == sym or orig_is_symlink(p_self)
+
+                def fake_resolve(p_self: Path, strict: bool = False) -> Path:
+                    if p_self == sym:
+                        return orig_resolve(secret, strict=strict)
+                    return orig_resolve(p_self, strict=strict)
+
+                with mock.patch.object(Path, "is_symlink", fake_is_symlink), \
+                     mock.patch.object(Path, "resolve", fake_resolve), \
+                     mock.patch.object(starter_main, "SECRET", b"test_secret"), \
+                     mock.patch.object(sys, "argv", ["main.py", "--input", str(inp), "--output", str(out)]):
+                    rc = starter_main.main()
+                self.assertEqual(rc, 0)
+
+            rep = json.loads((out / "report.json").read_text(encoding="utf-8"))
+            sym_entry = next((e for e in rep["files"] if e["input_sha256"] == hashlib.sha256(b"SUPER_SECRET_CANARY_OUTSIDE_DIR").hexdigest()), None)
+            self.assertIsNotNone(sym_entry)
+            self.assertEqual(sym_entry.get("status"), "quarantined")
+            self.assertEqual(sym_entry.get("reason"), "symlink_traversal")
+            self.assertIsNone(sym_entry.get("output"))
+
+            # Ensure the secret was never copied to sanitized/
+            san = out / "sanitized"
+            for p in san.rglob("*"):
+                if p.is_file():
+                    content = p.read_text(encoding="utf-8", errors="ignore")
+                    self.assertNotIn("SUPER_SECRET_CANARY_OUTSIDE_DIR", content)
+            self.assertFalse((san / "link.txt").exists())
+
+
+class TestJsonDepthDefense(unittest.TestCase):
+    """Verify general JSON depth scanner detects depth bombs beyond max_depth."""
+
+    def test_check_nesting_depth_catches_deep_structures(self):
+        # 30 levels deep
+        deep_json = '{"a": ' * 30 + '"payload"' + '}' * 30
+        with self.assertRaises(ValueError) as ctx:
+            check_nesting_depth(deep_json, max_depth=25)
+        self.assertEqual(str(ctx.exception), "excessive_depth")
+
+    def test_check_nesting_depth_catches_nested_arrays(self):
+        deep_arr = '[' * 30 + '"payload"' + ']' * 30
+        with self.assertRaises(ValueError) as ctx:
+            check_nesting_depth(deep_arr, max_depth=25)
+        self.assertEqual(str(ctx.exception), "excessive_depth")
+
+    def test_check_nesting_depth_allows_valid_depth(self):
+        valid_json = '{"level1": {"level2": {"level3": [1, 2, {"level5": "hello"}]}}}'
+        # Should not raise
+        check_nesting_depth(valid_json, max_depth=25)
+
+    def test_check_nesting_depth_ignores_brackets_in_strings(self):
+        fake_deep = '{"msg": "' + '{{{{[[[[[[' * 10 + '"}'
+        # Should not raise because brackets are inside a string literal
+        check_nesting_depth(fake_deep, max_depth=25)
 
 
 if __name__ == '__main__':
