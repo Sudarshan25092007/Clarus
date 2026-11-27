@@ -32,7 +32,7 @@ sanitized/ (192 clean files) + records.jsonl (821 records) + report.json (raksha
 - **Ingestion:** Streams CSV, TSV, JSON, and TXT files across four character encodings without third-party libraries. Malicious, hostile, or broken files (symlink directory traversals, arbitrary-key recursive depth bombs, corrupt bytes, mislabeled headers) are safely quarantined with non-revealing error codes (`symlink_traversal`, `excessive_depth`, `corrupt_bytes`, `mislabeled_format`).
 - **Detection:** Two-pass identity-driven architecture. Pass 1 extracts all patient names, relatives, phones, and UHIDs across registrations, OPD logs, and billing files into an in-memory gazetteer. Pass 2 executes bounded regex scrubbing across Latin, Devanagari numerals (`[६-९][\u0966-\u096F]{9}`), and Hinglish clinical narratives (`ka BP`, `ko bukhar hai`).
 - **Linkage & Pseudonyms:** 3-key orthogonal blocking (exact phone, name+gender, relative+relation+gender; never UHID alone) reduces candidate pairs by 99.0% (22 pairs from 2,145) with 100% candidate recall. Constrained graph clustering prevents transitive over-merging by enforcing cross-pair anti-transitivity verification before joining components. Deterministic HMAC-SHA256 assigns collision-free Crockford Base32 pseudonyms (`PSN-XXXXXX`).
-- **Privacy Layer:** Date shifts uniformly displace temporal events per-patient within `[-max, +max]`, preserving chronological stay duration. Age values are banded into 5-year cohorts. Location fields are generalized from village/mohalla to district level.
+- **Privacy Layer:** Date shifts uniformly displace temporal events per-patient within `[-max, +max]`, preserving chronological stay duration. Age values are banded into 5-year cohorts (widened to 10-year cohorts with `tehsil` suppressed as `[SUPPRESSED]` when distinct-patient cohort size `< min_group_size`). Location fields retain district context without village/street exposure.
 - **Security:** Zero secret leakage; `RAKSHA_SECRET` resides purely in volatile memory. All stdout/stderr streams are stripped of PII.
 
 ## 4. USP
@@ -57,5 +57,5 @@ sanitized/ (192 clean files) + records.jsonl (821 records) + report.json (raksha
 ## 6. Known limitations & Roadmap
 1. Unseen transliteration variants with no phone or UHID overlap currently fall back to conservative isolation to guarantee zero false merges.
 2. Uniform per-patient date shifting preserves duration of stay but could be enhanced with differential jitter for non-clinical milestones.
-3. Rare-group quasi-identifier risk (`min_group_size: 5` in `policy.yaml`) is evaluated via equivalence class profiling (`identity_risk.py`); automated widening/suppression of sparse cohorts is scheduled for production deployment.
+3. Rare-group k-anonymity (`min_group_size: 5` in `policy.yaml`) is enforced structurally in Pass 2 (`tehsil` -> `[SUPPRESSED]`, rare cohorts widened to 10-year age bands, alongside equivalence-class profiling in `identity_risk.py`).
 

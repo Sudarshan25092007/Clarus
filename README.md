@@ -147,8 +147,7 @@ Informed by deep research into privacy-preserving record linkage (PPRL), Indic c
 ## Setup & Usage
 
 ### Prerequisites
-- Python `3.10+` (standard library only; no external runtime dependencies).
-- Optional for PDF generation: `reportlab` and `pypdf`.
+- Python `3.10+` (standard library only; zero external runtime dependencies).
 
 ### Run the Pipeline
 
@@ -181,12 +180,6 @@ python3 -m unittest tests/test_phase6_generalize.py
 python3 -m unittest tests/test_phase7_pass2_wiring.py
 ```
 
-### Regenerate the 2-Page Project Brief PDF
-```bash
-python3 scripts/generate_brief_pdf.py
-# Verified output: docs/PROJECT_BRIEF.pdf (exactly 2 pages, A4)
-```
-
 ---
 
 ## Repository Structure
@@ -202,7 +195,6 @@ python3 scripts/generate_brief_pdf.py
 | [`starter/identity_*.py`](starter/) | Linkage modules: adapters, blocking, pairwise features, decision tiers, constrained clustering |
 | [`docs/PROJECT_BRIEF.pdf`](docs/PROJECT_BRIEF.pdf) | Official 2-page Project Brief PDF for competition judges |
 | [`brief/PROJECT_BRIEF_TEMPLATE.md`](brief/PROJECT_BRIEF_TEMPLATE.md) | Full markdown source of the Project Brief |
-| [`scripts/generate_brief_pdf.py`](scripts/generate_brief_pdf.py) | Automated ReportLab script generating the exact 2-page brief PDF |
 | [`tests/`](tests/) | 85 unit, acceptance, and adversarial hidden-eval tests |
 | [`dev/`](dev/) | Practice input dataset (`dev/input/`) and ground truth (`dev/truth/`) |
 | [`check_submission.py`](check_submission.py) | Official pre-submit validation runner (checks contract, secrets, PDF) |
